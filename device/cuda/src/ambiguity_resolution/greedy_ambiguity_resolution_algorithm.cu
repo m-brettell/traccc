@@ -12,7 +12,6 @@
 #include "./kernels/block_inclusive_scan.cuh"
 #include "./kernels/count_removable_tracks.cuh"
 #include "./kernels/count_shared_measurements.cuh"
-#include "./kernels/exclusive_scan.cuh"
 #include "./kernels/fill_inverted_ids.cuh"
 #include "./kernels/fill_track_candidates.cuh"
 #include "./kernels/fill_tracks_per_measurement.cuh"
@@ -234,7 +233,7 @@ greedy_ambiguity_resolution_algorithm::operator()(
 
     // Unique measurement ids
     vecmem::data::vector_buffer<measurement_id_type>
-        meas_id_to_unique_id_buffer{max_meas.measurement_id, m_mr.main};
+        meas_id_to_unique_id_buffer{max_meas.measurement_id + 1, m_mr.main};
 
     // Make meas_id to meas vector
     {
@@ -376,6 +375,8 @@ greedy_ambiguity_resolution_algorithm::operator()(
         vecmem::make_unique_alloc<unsigned int>(m_mr.main);
     vecmem::unique_alloc_ptr<unsigned int> n_meas_to_remove_device =
         vecmem::make_unique_alloc<unsigned int>(m_mr.main);
+    vecmem::unique_alloc_ptr<unsigned int> n_valid_threads_device =
+        vecmem::make_unique_alloc<unsigned int>(m_mr.main);
 
     // Device objects
     int is_first_iteration = 1;
@@ -403,8 +404,27 @@ greedy_ambiguity_resolution_algorithm::operator()(
     unsigned int nThreads_full = 1024;
     unsigned int nBlocks_full = (n_tracks + 1023) / 1024;
 
-    unsigned int nThreads_scan = 1024;
-    unsigned int nBlocks_scan = (n_accepted + 1023) / 1024;
+    // Compute the threadblock dimension for scanning kernels
+    auto compute_scan_config = [&](unsigned int n_accepted) {
+        unsigned int nThreads_scan = m_warp_size * 4;
+        unsigned int nBlocks_scan =
+            (n_accepted + nThreads_scan - 1) / nThreads_scan;
+
+        while (nThreads_scan <= 1024) {
+            if (nBlocks_scan > 1024) {
+                nThreads_scan *= 2;
+                nBlocks_scan = (n_accepted + nThreads_scan - 1) / nThreads_scan;
+            } else {
+                break;
+            }
+        }
+
+        return std::make_pair(nThreads_scan, nBlocks_scan);
+    };
+
+    auto scan_dim = compute_scan_config(n_accepted);
+    unsigned int nThreads_scan = scan_dim.first;
+    unsigned int nBlocks_scan = scan_dim.second;
 
     assert(nBlocks_scan <= 1024 &&
            "nBlocks_scan larger than 1024 will cause invalid arguments in "
@@ -422,7 +442,10 @@ greedy_ambiguity_resolution_algorithm::operator()(
         nBlocks_adaptive =
             (n_accepted + nThreads_adaptive - 1) / nThreads_adaptive;
         nBlocks_warp = (n_accepted + nThreads_warp - 1) / nThreads_warp;
-        nBlocks_scan = (n_accepted + 1023) / 1024;
+
+        scan_dim = compute_scan_config(n_accepted);
+        nThreads_scan = scan_dim.first;
+        nBlocks_scan = scan_dim.second;
 
         // Make CUDA Graph
         cudaGraph_t graph;
@@ -460,17 +483,10 @@ greedy_ambiguity_resolution_algorithm::operator()(
                 .n_removable_tracks = n_removable_tracks_device.get(),
                 .n_meas_to_remove = n_meas_to_remove_device.get(),
                 .meas_to_remove_view = meas_to_remove_buffer,
-                .threads_view = threads_buffer});
+                .threads_view = threads_buffer,
+                .n_valid_threads = n_valid_threads_device.get()});
 
-        kernels::exclusive_scan<<<1, 1024, 0, stream>>>(
-            device::exclusive_scan_payload{
-                .terminate = terminate_device.get(),
-                .n_removable_tracks = n_removable_tracks_device.get(),
-                .n_meas_to_remove = n_meas_to_remove_device.get(),
-                .meas_to_remove_view = meas_to_remove_buffer,
-                .threads_view = threads_buffer});
-
-        kernels::remove_tracks<<<1, 1024, 0, stream>>>(
+        kernels::remove_tracks<<<1, 512, 0, stream>>>(
             device::remove_tracks_payload{
                 .sorted_ids_view = sorted_ids_buffer,
                 .n_accepted = n_accepted_device.get(),
@@ -485,13 +501,13 @@ greedy_ambiguity_resolution_algorithm::operator()(
                 .n_shared_view = n_shared_buffer,
                 .rel_shared_view = rel_shared_buffer,
                 .n_removable_tracks = n_removable_tracks_device.get(),
-                .n_meas_to_remove = n_meas_to_remove_device.get(),
                 .meas_to_remove_view = meas_to_remove_buffer,
                 .threads_view = threads_buffer,
                 .terminate = terminate_device.get(),
                 .n_updated_tracks = n_updated_tracks_device.get(),
                 .updated_tracks_view = updated_tracks_buffer,
-                .is_updated_view = is_updated_buffer});
+                .is_updated_view = is_updated_buffer,
+                .n_valid_threads = n_valid_threads_device.get()});
 
         // The seven kernels below are to keep sorted_ids sorted based on
         // the relative shared measurements and pvalues. This can be reduced

@@ -36,8 +36,9 @@ __device__ void count_tracks(int tid, int* sh_n_meas, int n_tracks,
                 offset = sh_n_meas[count];
                 add = stride * 2;
             }
-            __syncthreads();
         }
+
+        __syncthreads();
     }
 
     if (tid == 0) {
@@ -70,6 +71,7 @@ __launch_bounds__(512) __global__ void count_removable_tracks(
     __shared__ int shared_n_meas[512];
     __shared__ measurement_id_type sh_meas_ids[512];
     __shared__ unsigned int sh_threads[512];
+    __shared__ int prefix[512];
     __shared__ unsigned int n_meas_total;
     __shared__ unsigned int bound;
     __shared__ unsigned int n_tracks_to_iterate;
@@ -100,6 +102,7 @@ __launch_bounds__(512) __global__ void count_removable_tracks(
     if (threadIndex == 0) {
         *(payload.n_removable_tracks) = 0;
         *(payload.n_meas_to_remove) = 0;
+        *(payload.n_valid_threads) = 0;
         n_meas_total = 0;
         bound = 512;
         N = 1;
@@ -110,8 +113,12 @@ __launch_bounds__(512) __global__ void count_removable_tracks(
 
     __syncthreads();
 
+    unsigned int trk_id = 0;
+    unsigned int n_m = 0;
     if (gid >= 0) {
-        shared_n_meas[threadIndex] = n_meas[sorted_ids[gid]];
+        trk_id = sorted_ids[gid];
+        n_m = n_meas[trk_id];
+        shared_n_meas[threadIndex] = n_m;
     }
 
     __syncthreads();
@@ -145,11 +152,12 @@ __launch_bounds__(512) __global__ void count_removable_tracks(
 
     // @TODO: Improve the logic
     if (threadIndex < n_tracks_to_iterate && gid >= 0) {
-        const auto& mids = meas_ids[sorted_ids[gid]];
-        for (const auto& id : mids) {
-            const unsigned int pos = atomicAdd(&n_meas_total, 1);
-            sh_meas_ids[pos] = id;
-            sh_threads[pos] = threadIndex;
+        const unsigned int pos = atomicAdd(&n_meas_total, n_m);
+
+        const auto& mids = meas_ids[trk_id];
+        for (int i = 0; i < n_m; i++) {
+            sh_meas_ids[pos + i] = mids[i];
+            sh_threads[pos + i] = threadIndex;
         }
     }
 
@@ -194,6 +202,8 @@ __launch_bounds__(512) __global__ void count_removable_tracks(
         bool is_start =
             (threadIndex == 0) || (sh_meas_ids[threadIndex - 1] != mid);
         const auto unique_meas_idx = meas_id_to_unique_id.at(mid);
+        const auto its_accepted_tracks =
+            n_accepted_tracks_per_measurement.at(unique_meas_idx);
 
         if (is_start) {
 
@@ -204,8 +214,7 @@ __launch_bounds__(512) __global__ void count_removable_tracks(
                 if (sh_threads[i] != sh_threads[i - 1]) {
                     n_sharing_tracks++;
 
-                    if (n_sharing_tracks ==
-                        n_accepted_tracks_per_measurement.at(unique_meas_idx)) {
+                    if (n_sharing_tracks == its_accepted_tracks) {
                         atomicMin(&min_thread, sh_threads[i - 1]);
                         break;
                     }
@@ -237,6 +246,43 @@ __launch_bounds__(512) __global__ void count_removable_tracks(
     if (threadIndex == 0) {
         *(payload.n_meas_to_remove) = n_meas_total;
     }
+
+    __syncthreads();
+
+    int is_valid =
+        (threads[threadIndex] < *(payload.n_removable_tracks)) ? 1 : 0;
+
+    // TODO: Use better reduction algorithm
+    if (is_valid) {
+        atomicAdd(payload.n_valid_threads, 1);
+    }
+
+    __syncthreads();
+
+    // Exclusive scan (Hillis-Steele)
+    prefix[threadIndex] = is_valid;  // copy input
+    __syncthreads();
+
+    for (int offset = 1; offset < *(payload.n_meas_to_remove); offset <<= 1) {
+        int val = 0;
+        if (threadIndex >= offset) {
+            val = prefix[threadIndex - offset];
+        }
+        __syncthreads();
+        prefix[threadIndex] += val;
+        __syncthreads();
+    }
+
+    if (is_valid) {
+        prefix[threadIndex] -= 1;
+        sh_meas_ids[prefix[threadIndex]] = meas_to_remove[threadIndex];
+        sh_threads[prefix[threadIndex]] = threads[threadIndex];
+    }
+
+    __syncthreads();
+
+    meas_to_remove[threadIndex] = sh_meas_ids[threadIndex];
+    threads[threadIndex] = sh_threads[threadIndex];
 }
 
 }  // namespace traccc::cuda::kernels
