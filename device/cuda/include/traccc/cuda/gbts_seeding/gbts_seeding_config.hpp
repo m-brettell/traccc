@@ -7,10 +7,16 @@
 
 #pragma once
 
+//System include(s)
+#include <memory>
+
 // Project include(s).
 #include "traccc/definitions/common.hpp"
 #include "traccc/definitions/primitives.hpp"
 #include "traccc/definitions/qualifiers.hpp"
+
+//Detray include(s).
+#include <detray/geometry/barcode.hpp>
 
 namespace traccc::device::GBTS {
 //where to put these?
@@ -21,106 +27,140 @@ struct gbts_layerInfo {
 	//float2 vector type
 	float minEta{};
 	float delatEta{};
+	bool isEndcap{};
 };
 
-enum gbts_consts {
+enum class gbts_consts : unsigned short {
 	
 	//node binning
-	unsigned short max_phi_bins       = 120,
+	max_phi_bins = 120,
 	//graph building
-	unsigned short node_buffer_length = 250,
-	unsigned char  max_num_neighbours = 10,
+	node_buffer_length = 250,
+	max_num_neighbours = 10,
 	//graph processing
-	unsigned char max_cca_iterations = 20,
-	unsigned short shared_state_buffer_size = 578,
+	max_cca_iterations = 20,
+	shared_state_buffer_size = 578,
 	//matrix access for kalman filter state
-	unsigned char M3_0_0 = 0, M3_0_1 = 1, M3_0_2 = 2, M3_1_1 = 3, M3_1_2 = 4, M3_2_2 = 5,
+	M3_0_0 = 0, 
+	M3_0_1 = 1, 
+	M3_0_2 = 2,
+	M3_1_1 = 3,
+	M3_1_2 = 4,
+	M3_2_2 = 5,
 		
-	unsigned char M2_0_0 = 0, M2_0_1 = 1, M2_1_1 = 1,
+	M2_0_0 = 0,
+	M2_0_1 = 1,
+	M2_1_1 = 1,
 }; 
 }
 
 namespace traccc {
 
 struct gbts_seedfinder_config {
-	gbts_seedfinder_config(const std::vector<std::pair<unsigned int, unsigned int>> binTables, std::vector<gbts_layerInfo> layerInfo,
-              const std::vector<std::pair<uint64_t, unsigned int>> detrayBarcodeBinning, float minPt)
+	gbts_seedfinder_config(const std::vector<std::pair<int, int>>& binTables, const std::vector<device::GBTS::gbts_layerInfo>& layerInfo,
+              const std::vector<std::pair<uint64_t, int>>& detrayBarcodeBinning, float minPt);
 	
 	//layer linking and geometry	
-	std::vector<std::pair<unsigned char, unsigned char>> binTables{};
-	std::vector<gbts_layerInfo> layerInfo{};
-	unsigned int nLayers = 0;	
+	std::vector<std::pair<int, int>> binTables{};
+	std::vector<device::GBTS::gbts_layerInfo> layerInfo{};
+	unsigned long int nLayers = 0;	
 	
-	std::vector<std::array<unsigned int, 2>> volumeToLayerMap;
-	unsigned int nVolumes = 0;	
+	std::shared_ptr<int[]> volumeToLayerMap{};
+	unsigned long int maxVolIndex = 0;	
 
 	std::vector<std::array<unsigned int, 2>> surfaceToLayerMap;
-	unsigned int nSurfaces = 0;	
+	unsigned long int surfaceMapSize = 0;	
 
 	//tuned for 900 MeV pT cut and scaled by input minPt	
 	//edge making cuts
-	float min_deltaPhi = 0.015;
-	float dphi_coeff = 2.2e-4;
-	float min_deltaPhi_low_dr = 0.002;
-	float dphi_coeff_low_dr = 4.33e-4;	
-	float minDeltaRadius = 2.0;
-	float min_z0 = -600;
-	float max_z0 = 600;
-	float maxOuterRadius = 550;
-	float cut_zMinU = 0;
-	float cut_zMaxU = 0; //how to get ROI rzdr
-	float maxKappa = 0.337;
-	float low_Kappa_d0 = 0.02;
-	float high_Kappa_d0 = 0.1;
+	float min_deltaPhi = 0.015f;
+	float dphi_coeff = 2.2e-4f;
+	float min_deltaPhi_low_dr = 0.002f;
+	float dphi_coeff_low_dr = 4.33e-4f;	
+	float minDeltaRadius = 2.0f;
+	float min_z0 = 160.0f;
+	float max_z0 = 160.0f;
+	float maxOuterRadius = 550.0f; //change to 350
+	float cut_zMinU = min_z0 - maxOuterRadius*36;
+	float cut_zMaxU = max_z0 + maxOuterRadius*36; //how to get ROI dzdr
+	float maxKappa = 0.337f;
+	float low_Kappa_d0 = 0.02f;
+	float high_Kappa_d0 = 0.1f;
 	
 	//edge matching cuts
-	float cut_dphi_max = 0.012;
-	float cut_dcurv_max = 0.001;
-	float cut_tau_ratio_max = 0.01; 
+	float cut_dphi_max = 0.012f;
+	float cut_dcurv_max = 0.001f;
+	float cut_tau_ratio_max = 0.01f;
 	
 	//seed extraction
+	
 };
 
 //binTables contains pairs of linked layer-eta bins
 //the layerInfo should be calculated from the barcodeBinning
 //BarcodeBinning pair is detray barcode and bin index (corrisponding to the layers in layerInfo) ordered by volume 
 //minPt in MeV
-gbts_seedfinder_config::gbts_seedfinder_config(const std::vector<std::pair<unsigned int, unsigned char>> input_binTables, std::vector<gbts_layerInfo> input_layerInfo,
-	  const std::vector<std::pair<uint64_t, unsigned int>> detrayBarcodeBinning, float minPt = 900) {
+gbts_seedfinder_config::gbts_seedfinder_config(const std::vector<std::pair<int, int>>& input_binTables, const std::vector<device::GBTS::gbts_layerInfo>& input_layerInfo,
+	  const std::vector<std::pair<uint64_t, int>>& detrayBarcodeBinning, float minPt = 900.0f) {
 	
 	//format layer-eta binning infomation
 	binTables = input_binTables;
 	layerInfo = input_layerInfo;
+	
 	unsigned int current_volume = 0;
-	unsigned int current_layer = 0;
+	
+	int current_layer = 0;
 	bool layerChange = false;
-	std::pair<uint64_t, unsigned int> surfaceLayerPair;
-	for(unsigned int index = 0; index<detraySurfaceToLayerMap.size(); index++) {
-		
-		surfaceLayerPair = detraySurfaceToLayerMap[index];
 
+	std::pair<uint64_t, int> surfaceLayerPair;
+	std::vector<std::array<unsigned int, 2>> surfacesInVolume;
+	
+	std::vector<std::pair<int, unsigned int>> volumeToLayerMap_unordered;
+	unsigned int largest_volume_index = 0;
+	for(int index = 0; index<detrayBarcodeBinning.size(); index++) {
+		
+		surfaceLayerPair = detrayBarcodeBinning[index];
 		detray::geometry::barcode barcode(surfaceLayerPair.first);
-		surfaceToLayerMap.push_back({barcode.surface_id, surfaceLayerPair.second});
+		
+		if(current_layer == 0) current_layer = surfaceLayerPair.second;
+		if(current_volume == 0) current_volume = barcode.volume();
+		
+		//save surfaces incase volume is not encommpassed by a layer
+		surfacesInVolume.push_back(std::array<unsigned int, 2>(static_cast<unsigned int>(barcode.id()), static_cast<unsigned int>(surfaceLayerPair.second)));
+		
 		//is volume encompassed by a layer
 		if(current_layer != surfaceLayerPair.second) layerChange = true;
+		
 		//create volume veiw on the surface map
 		if(barcode.volume() != current_volume) {
-			unsigned int bin = layerChange ? 1e6 : surfaceLayerPair.second;
-			volumeToLayerMap.push_back({index, bin});
 			
+			int bin = -1*surfaceLayerPair.second;
+			if(layerChange) {
+				bin = static_cast<int>(surfaceToLayerMap.size() + 1); //start of this volumes surfaces in the map
+				for(std::array<unsigned int, 2> pair : surfacesInVolume) surfaceToLayerMap.push_back(pair);
+			}
+			volumeToLayerMap_unordered.push_back(std::make_pair(bin, static_cast<unsigned int>(barcode.volume()))); // -ve layerIdx if one-to-one +ve index + 1 otherwise
+			if(barcode.volume() > largest_volume_index) largest_volume_index = barcode.volume();
+			current_layer  = 0;
+			current_volume = 0;
 			layerChange = false;
-		} 
+		}
 	}
+	// make volume by layer map
+	volumeToLayerMap = std::make_shared<int[]>(largest_volume_index);
+	for(std::pair<int, unsigned int> vLpair : volumeToLayerMap_unordered) volumeToLayerMap[vLpair.second] = vLpair.first;
+
 	//scale cuts
-	float ptScale = 900/minPt;
+	float ptScale = 900.0f/minPt;
 	min_deltaPhi*=ptScale;
 	dphi_coeff*=ptScale;
 	min_deltaPhi_low_dr*=ptScale;
 	dphi_coeff_low_dr*=ptScale;
 	maxKappa*=ptScale;
+
 	//contianers sizes
-	nLayers   = layerInfo.size();
-	nVolumes  = volumeToLayerMap.size();
-	nSurfaces = surfaceToLayerMap.size();
+	maxVolIndex = largest_volume_index;
+	nLayers     = layerInfo.size();
+	surfaceMapSize   = surfaceToLayerMap.size();
 }
 } //namespace traccc

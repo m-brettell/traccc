@@ -13,10 +13,13 @@
 // Project include(s).
 #include "traccc/edm/seed_collection.hpp"
 #include "traccc/edm/spacepoint_collection.hpp"
-#include "./gbts_seeding_config.hpp"
+#include "traccc/edm/measurement.hpp"
 #include "traccc/utils/algorithm.hpp"
 #include "traccc/utils/memory_resource.hpp"
 #include "traccc/utils/messaging.hpp"
+
+//GBTS include(s)
+#include "./gbts_seeding_config.hpp"
 
 // VecMem include(s).
 #include <vecmem/utils/copy.hpp>
@@ -26,40 +29,38 @@
 
 namespace traccc::cuda {
 
-/// Main algorithm for performing the track seeding on an NVIDIA GPU
+/// Main algorithm for performing GBTS on an NVIDIA GPU
 ///
 /// This algorithm returns a buffer which is not necessarily filled yet. A
 /// synchronisation statement is required before destroying this buffer.
 ///
 class gbts_seeding_algorithm : public algorithm<edm::seed_collection::buffer(
-                              const edm::spacepoint_collection::const_view&)>,
-                          public messaging {
+							   const traccc::edm::spacepoint_collection::const_view&, const traccc::measurement_collection_types::const_view& measurements)>,
+                               public messaging {
 
     public:
     /// Constructor for the seed finding algorithm
     ///
     /// @param str The CUDA stream to perform the operations in
     ///
-    gbts_seeding_algorithm(
-        const gbts_seedfinder_config& finder_config,
-		traccc::memory_resource& mr, vecmem::copy& copy, stream& str
-        std::unique_ptr<const Logger> logger = getDummyLogger().clone());
-
-    /// Operator executing the algorithm.
+	gbts_seeding_algorithm(const gbts_seedfinder_config& cfg, traccc::memory_resource& mr, vecmem::copy& copy,stream& str, std::unique_ptr<const Logger> logger = getDummyLogger().clone());
+    
+	/// Operator executing the algorithm.
     ///
     /// @param spacepoints is a view of all spacepoints in the event
     /// @return the buffer of track seeds reconstructed from the spacepoints
     ///
-    output_type operator()(const edm::spacepoint_collection::const_view&
-                               spacepoints, const edm::measurment_collection::const_view&) const override;
-
-    private:
+    output_type operator()(const traccc::edm::spacepoint_collection::const_view& spacepoints, const traccc::measurement_collection_types::const_view& measurements) const;
+    
+	private:
 		
 	gbts_seedfinder_config m_config;
-	
-	traccc::memory_resource m_mr;
-	//The CUDA stream
-	std::refrence_wrapper<stream> m_stream;	
+    /// The memory resource(s) to use
+    traccc::memory_resource m_mr;
+    /// The copy object to use
+    std::reference_wrapper<vecmem::copy> m_copy;
+    /// The CUDA stream to use
+    std::reference_wrapper<stream> m_stream;	
 
 };  // class seeding_algorithm
 
