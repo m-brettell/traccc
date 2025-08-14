@@ -34,6 +34,7 @@ include( GNUInstallDirs )
 # Explicitly set the output directory for the binaries. Such that if this
 # project is included by another project, the main project's configuration would
 # win out.
+
 set( CMAKE_RUNTIME_OUTPUT_DIRECTORY
    "${CMAKE_BINARY_DIR}/${CMAKE_INSTALL_BINDIR}" CACHE PATH
    "Directory for the built binaries" )

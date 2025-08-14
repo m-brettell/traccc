@@ -27,13 +27,14 @@ __global__ void count_sp_by_layer(const traccc::edm::spacepoint_collection::cons
                                   const int* volumeToLayerMap, const uint2* surfaceToLayerMap, const traccc::device::GBTS::gbts_layerInfo* layerInfo, 
                                   float4* reducedSP, unsigned int* layerCounts, unsigned short* spacepointsLayer,
                                   const unsigned int nSp, const unsigned int surfaceMapSize) {
-	
+	//shared mem volumeToLayer map
+
 	const traccc::measurement_collection_types::const_device measurements(measurements_view);
 	const traccc::edm::spacepoint_collection::const_device spacepoints(spacepoints_view);
 	
 	for(int spIdx = threadIdx.x + gridDim.x*blockDim.x; spIdx<nSp; spIdx += gridDim.x*blockDim.x) {
 		//get the layer of the spacepoint
-		const traccc::edm::spacepoint_collection::device::proxy_type spacepoint = spacepoints.at(spIdx);
+		const traccc::edm::spacepoint_collection::const_device::const_proxy_type spacepoint = spacepoints.at(spIdx);
 		const traccc::measurement& measurement = measurements.at(spacepoint.measurement_index_1());
 
 		detray::geometry::barcode barcode = measurement.surface_link;	
