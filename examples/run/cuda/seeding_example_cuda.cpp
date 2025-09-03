@@ -22,6 +22,7 @@
 #include "traccc/finding/combinatorial_kalman_filter_algorithm.hpp"
 #include "traccc/fitting/kalman_fitting_algorithm.hpp"
 #include "traccc/geometry/detector.hpp"
+#include "traccc/geometry/host_detector.hpp"
 #include "traccc/io/read_detector.hpp"
 #include "traccc/io/read_detector_description.hpp"
 #include "traccc/io/read_measurements.hpp"
@@ -33,10 +34,13 @@
 #include "traccc/options/magnetic_field.hpp"
 #include "traccc/options/performance.hpp"
 #include "traccc/options/program_options.hpp"
+#include "traccc/options/seed_matching.hpp"
 #include "traccc/options/track_finding.hpp"
 #include "traccc/options/track_fitting.hpp"
+#include "traccc/options/track_matching.hpp"
 #include "traccc/options/track_propagation.hpp"
 #include "traccc/options/track_seeding.hpp"
+#include "traccc/options/truth_finding.hpp"
 #include "traccc/performance/collection_comparator.hpp"
 #include "traccc/performance/soa_comparator.hpp"
 #include "traccc/performance/timer.hpp"
@@ -69,6 +73,9 @@ int seq_run(const traccc::opts::track_seeding& seeding_opts,
             const traccc::opts::magnetic_field& bfield_opts,
             const traccc::opts::performance& performance_opts,
             const traccc::opts::accelerator& accelerator_opts,
+            const traccc::opts::truth_finding& truth_finding_opts,
+            const traccc::opts::seed_matching& seed_matching_opts,
+            const traccc::opts::track_matching& track_matching_opts,
             std::unique_ptr<const traccc::Logger> ilogger) {
     TRACCC_LOCAL_LOGGER(std::move(ilogger));
 
@@ -81,10 +88,14 @@ int seq_run(const traccc::opts::track_seeding& seeding_opts,
 
     // Performance writer
     traccc::seeding_performance_writer sd_performance_writer(
-        traccc::seeding_performance_writer::config{},
+        traccc::seeding_performance_writer::config{
+            .truth_config = truth_finding_opts,
+            .seed_truth_config = seed_matching_opts},
         logger().clone("SeedingPerformanceWriter"));
     traccc::finding_performance_writer find_performance_writer(
-        traccc::finding_performance_writer::config{},
+        traccc::finding_performance_writer::config{
+            .truth_config = truth_finding_opts,
+            .track_truth_config = track_matching_opts},
         logger().clone("FindingPerformanceWriter"));
     traccc::fitting_performance_writer fit_performance_writer(
         traccc::fitting_performance_writer::config{},
@@ -114,29 +125,34 @@ int seq_run(const traccc::opts::track_seeding& seeding_opts,
      *****************************/
 
     // B field value
+    const traccc::vector3 field_vec(seeding_opts);
     const auto host_field = traccc::details::make_magnetic_field(bfield_opts);
-    const auto device_field = traccc::cuda::make_magnetic_field(host_field);
+    const auto device_field = traccc::cuda::make_magnetic_field(
+        host_field,
+        (accelerator_opts.use_gpu_texture_memory
+             ? traccc::cuda::magnetic_field_storage::texture_memory
+             : traccc::cuda::magnetic_field_storage::global_memory));
 
     // Construct a Detray detector object, if supported by the configuration.
-    traccc::default_detector::host host_det{mng_mr};
+    traccc::host_detector host_det;
     traccc::io::read_detector(host_det, mng_mr, detector_opts.detector_file,
                               detector_opts.material_file,
                               detector_opts.grid_file);
-
-    // Detector view object
-    traccc::default_detector::view det_view = detray::get_data(host_det);
 
     // Copy objects
     vecmem::copy host_copy;
     vecmem::cuda::copy copy;
 
-    traccc::device::container_d2h_copy_alg<traccc::track_state_container_types>
-        track_state_d2h{mr, copy, logger().clone("TrackStateD2HCopyAlg")};
+    const traccc::detector_buffer detector_buffer =
+        traccc::buffer_from_host_detector(host_det, mng_mr, host_copy);
 
     // Seeding algorithm
+    const traccc::seedfinder_config seedfinder_config(seeding_opts);
+    const traccc::seedfilter_config seedfilter_config(seeding_opts);
+    const traccc::spacepoint_grid_config spacepoint_grid_config(seeding_opts);
     traccc::host::seeding_algorithm sa(
-        seeding_opts.seedfinder, {seeding_opts.seedfinder},
-        seeding_opts.seedfilter, host_mr, logger().clone("HostSeedingAlg"));
+        seedfinder_config, spacepoint_grid_config, seedfilter_config, host_mr,
+        logger().clone("HostSeedingAlg"));
     traccc::host::track_params_estimation tp(
         host_mr, logger().clone("HostTrackParEstAlg"));
 
@@ -144,9 +160,9 @@ int seq_run(const traccc::opts::track_seeding& seeding_opts,
 
     vecmem::cuda::async_copy async_copy{stream.cudaStream()};
 
-    traccc::cuda::seeding_algorithm sa_cuda{seeding_opts.seedfinder,
-                                            {seeding_opts.seedfinder},
-                                            seeding_opts.seedfilter,
+    traccc::cuda::seeding_algorithm sa_cuda{seedfinder_config,
+                                            spacepoint_grid_config,
+                                            seedfilter_config,
                                             mr,
                                             async_copy,
                                             stream,
@@ -190,7 +206,8 @@ int seq_run(const traccc::opts::track_seeding& seeding_opts,
         traccc::host::track_params_estimation::output_type params;
         traccc::edm::track_candidate_collection<traccc::default_algebra>::host
             track_candidates{host_mr};
-        traccc::track_state_container_types::host track_states;
+        traccc::edm::track_fit_container<traccc::default_algebra>::host
+            track_states{host_mr};
 
         traccc::edm::seed_collection::buffer seeds_cuda_buffer;
         traccc::bound_track_parameters_collection_types::buffer
@@ -199,8 +216,8 @@ int seq_run(const traccc::opts::track_seeding& seeding_opts,
         traccc::edm::track_candidate_collection<traccc::default_algebra>::buffer
             track_candidates_cuda_buffer;
 
-        traccc::track_state_container_types::buffer track_states_cuda_buffer{
-            {{}, *(mr.host)}, {{}, *(mr.host), mr.host}};
+        traccc::edm::track_fit_container<traccc::default_algebra>::buffer
+            track_states_cuda_buffer;
 
         {  // Start measuring wall time
             traccc::performance::timer wall_t("Wall time", elapsedTimes);
@@ -271,8 +288,7 @@ int seq_run(const traccc::opts::track_seeding& seeding_opts,
                                              elapsedTimes);
                 params_cuda_buffer =
                     tp_cuda(measurements_cuda_buffer, spacepoints_cuda_buffer,
-                            seeds_cuda_buffer,
-                            {0.f, 0.f, seeding_opts.seedfinder.bFieldInZ});
+                            seeds_cuda_buffer, field_vec);
                 stream.synchronize();
             }  // stop measuring track params cuda timer
 
@@ -282,8 +298,7 @@ int seq_run(const traccc::opts::track_seeding& seeding_opts,
                                              elapsedTimes);
                 params = tp(vecmem::get_data(measurements_per_event),
                             vecmem::get_data(spacepoints_per_event),
-                            vecmem::get_data(seeds),
-                            {0.f, 0.f, seeding_opts.seedfinder.bFieldInZ});
+                            vecmem::get_data(seeds), field_vec);
             }  // stop measuring track params cpu timer
 
             /*------------------------
@@ -294,7 +309,7 @@ int seq_run(const traccc::opts::track_seeding& seeding_opts,
                 traccc::performance::timer t("Track finding with CKF (cuda)",
                                              elapsedTimes);
                 track_candidates_cuda_buffer = device_finding(
-                    det_view, device_field, measurements_cuda_buffer,
+                    detector_buffer, device_field, measurements_cuda_buffer,
                     params_cuda_buffer);
             }
 
@@ -316,7 +331,7 @@ int seq_run(const traccc::opts::track_seeding& seeding_opts,
                                              elapsedTimes);
 
                 track_states_cuda_buffer = device_fitting(
-                    det_view, device_field,
+                    detector_buffer, device_field,
                     {track_candidates_cuda_buffer, measurements_cuda_buffer});
             }
 
@@ -347,8 +362,12 @@ int seq_run(const traccc::opts::track_seeding& seeding_opts,
         async_copy(track_candidates_cuda_buffer, track_candidates_cuda)->wait();
 
         // Copy track states from device to host
-        traccc::track_state_container_types::host track_states_cuda =
-            track_state_d2h(track_states_cuda_buffer);
+        traccc::edm::track_fit_container<traccc::default_algebra>::host
+            track_states_cuda{host_mr};
+        async_copy(track_states_cuda_buffer.tracks, track_states_cuda.tracks)
+            ->wait();
+        async_copy(track_states_cuda_buffer.states, track_states_cuda.states)
+            ->wait();
 
         if (accelerator_opts.compare_with_cpu) {
             // Show which event we are currently presenting the results for.
@@ -395,8 +414,8 @@ int seq_run(const traccc::opts::track_seeding& seeding_opts,
         n_seeds += seeds.size();
         n_found_tracks_cuda += track_candidates_cuda.size();
         n_found_tracks += track_candidates.size();
-        n_fitted_tracks_cuda += track_states_cuda.size();
-        n_fitted_tracks += track_states.size();
+        n_fitted_tracks_cuda += track_states_cuda.tracks.size();
+        n_fitted_tracks += track_states.tracks.size();
 
         /*------------
           Writer
@@ -414,17 +433,19 @@ int seq_run(const traccc::opts::track_seeding& seeding_opts,
                 vecmem::get_data(measurements_per_event), evt_data);
 
             find_performance_writer.write(
-                vecmem::get_data(track_candidates_cuda),
-                vecmem::get_data(measurements_per_event), evt_data);
+                {vecmem::get_data(track_candidates_cuda),
+                 vecmem::get_data(measurements_per_event)},
+                evt_data);
 
-            for (unsigned int i = 0; i < track_states_cuda.size(); i++) {
-                const auto& trk_states_per_track =
-                    track_states_cuda.at(i).items;
-
-                const auto& fit_res = track_states_cuda[i].header;
-
-                fit_performance_writer.write(trk_states_per_track, fit_res,
-                                             host_det, evt_data);
+            for (unsigned int i = 0; i < track_states_cuda.tracks.size(); i++) {
+                host_detector_visitor<detector_type_list>(
+                    host_det, [&]<typename detector_traits_t>(
+                                  const typename detector_traits_t::host& det) {
+                        fit_performance_writer.write(
+                            track_states_cuda.tracks.at(i),
+                            track_states_cuda.states, measurements_per_event,
+                            det, evt_data);
+                    });
             }
         }
     }
@@ -470,10 +491,14 @@ int main(int argc, char* argv[]) {
     traccc::opts::track_fitting fitting_opts;
     traccc::opts::performance performance_opts;
     traccc::opts::accelerator accelerator_opts;
+    traccc::opts::truth_finding truth_finding_opts;
+    traccc::opts::seed_matching seed_matching_opts;
+    traccc::opts::track_matching track_matching_opts;
     traccc::opts::program_options program_opts{
         "Full Tracking Chain Using CUDA (without clusterization)",
         {detector_opts, bfield_opts, input_opts, seeding_opts, finding_opts,
-         propagation_opts, fitting_opts, performance_opts, accelerator_opts},
+         propagation_opts, fitting_opts, performance_opts, accelerator_opts,
+         truth_finding_opts, seed_matching_opts, track_matching_opts},
         argc,
         argv,
         logger->cloneWithSuffix("Options")};
@@ -481,5 +506,6 @@ int main(int argc, char* argv[]) {
     // Run the application.
     return seq_run(seeding_opts, finding_opts, propagation_opts, fitting_opts,
                    input_opts, detector_opts, bfield_opts, performance_opts,
-                   accelerator_opts, logger->clone());
+                   accelerator_opts, truth_finding_opts, seed_matching_opts,
+                   track_matching_opts, logger->clone());
 }

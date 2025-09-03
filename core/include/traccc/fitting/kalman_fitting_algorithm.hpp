@@ -9,10 +9,12 @@
 
 // Project include(s).
 #include "traccc/bfield/magnetic_field.hpp"
+#include "traccc/edm/measurement.hpp"
 #include "traccc/edm/track_candidate_container.hpp"
-#include "traccc/edm/track_state.hpp"
+#include "traccc/edm/track_fit_container.hpp"
 #include "traccc/fitting/fitting_config.hpp"
 #include "traccc/geometry/detector.hpp"
+#include "traccc/geometry/host_detector.hpp"
 #include "traccc/utils/algorithm.hpp"
 #include "traccc/utils/messaging.hpp"
 
@@ -24,16 +26,14 @@
 
 // System include(s).
 #include <functional>
+#include <tuple>
 
 namespace traccc::host {
 
 /// Kalman filter based track fitting algorithm
 class kalman_fitting_algorithm
-    : public algorithm<track_state_container_types::host(
-          const default_detector::host&, const magnetic_field&,
-          const edm::track_candidate_container<default_algebra>::const_view&)>,
-      public algorithm<track_state_container_types::host(
-          const telescope_detector::host&, const magnetic_field&,
+    : public algorithm<edm::track_fit_container<default_algebra>::host(
+          const host_detector&, const magnetic_field&,
           const edm::track_candidate_container<default_algebra>::const_view&)>,
       public messaging {
 
@@ -41,7 +41,7 @@ class kalman_fitting_algorithm
     /// Configuration type
     using config_type = fitting_config;
     /// Output type
-    using output_type = track_state_container_types::host;
+    using output_type = edm::track_fit_container<default_algebra>::host;
 
     /// Constructor with the algorithm's configuration
     ///
@@ -54,27 +54,14 @@ class kalman_fitting_algorithm
 
     /// Execute the algorithm
     ///
-    /// @param det             The (default) detector object
+    /// @param det             The detector object
     /// @param bfield          The magnetic field object
     /// @param track_candidates All track candidates to fit
     ///
     /// @return A container of the fitted track states
     ///
     output_type operator()(
-        const default_detector::host& det, const magnetic_field& bfield,
-        const edm::track_candidate_container<default_algebra>::const_view&
-            track_candidates) const override;
-
-    /// Execute the algorithm
-    ///
-    /// @param det             The (telescope) detector object
-    /// @param bfield          The magnetic field object
-    /// @param track_candidates All track candidates to fit
-    ///
-    /// @return A container of the fitted track states
-    ///
-    output_type operator()(
-        const telescope_detector::host& det, const magnetic_field& bfield,
+        const host_detector& det, const magnetic_field& bfield,
         const edm::track_candidate_container<default_algebra>::const_view&
             track_candidates) const override;
 

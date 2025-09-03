@@ -35,6 +35,8 @@ traccc_add_alpaka_library( traccc_alpaka alpaka TYPE SHARED
   "src/utils/get_queue.cpp"
   "include/traccc/alpaka/utils/vecmem_objects.hpp"
   "src/utils/vecmem_objects.cpp"
+  "src/utils/oneDPL.hpp"
+  "src/utils/parallel_algorithms.hpp"
   # Clusterization
   "include/traccc/alpaka/clusterization/clusterization_algorithm.hpp"
   "src/clusterization/clusterization_algorithm.cpp"
@@ -54,14 +56,10 @@ traccc_add_alpaka_library( traccc_alpaka alpaka TYPE SHARED
   # Track finding algorithm(s).
   "include/traccc/alpaka/finding/combinatorial_kalman_filter_algorithm.hpp"
   "src/finding/combinatorial_kalman_filter_algorithm.cpp"
-  "src/finding/combinatorial_kalman_filter_algorithm_default_detector.cpp"
-  "src/finding/combinatorial_kalman_filter_algorithm_telescope_detector.cpp"
   "src/finding/combinatorial_kalman_filter.hpp"
   # Track fitting algorithm(s).
   "include/traccc/alpaka/fitting/kalman_fitting_algorithm.hpp"
   "src/fitting/kalman_fitting_algorithm.cpp"
-  "src/fitting/kalman_fitting_algorithm_default_detector.cpp"
-  "src/fitting/kalman_fitting_algorithm_telescope_detector.cpp"
   "src/fitting/kalman_fitting.hpp"
 )
 

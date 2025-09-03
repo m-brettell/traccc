@@ -11,10 +11,12 @@
 #include "traccc/bfield/magnetic_field.hpp"
 #include "traccc/clusterization/clusterization_algorithm.hpp"
 #include "traccc/edm/silicon_cell_collection.hpp"
-#include "traccc/edm/track_state.hpp"
+#include "traccc/edm/track_fit_collection.hpp"
+#include "traccc/edm/track_parameters.hpp"
 #include "traccc/finding/combinatorial_kalman_filter_algorithm.hpp"
 #include "traccc/fitting/kalman_fitting_algorithm.hpp"
 #include "traccc/geometry/detector.hpp"
+#include "traccc/geometry/host_detector.hpp"
 #include "traccc/geometry/silicon_detector_description.hpp"
 #include "traccc/seeding/seeding_algorithm.hpp"
 #include "traccc/seeding/silicon_pixel_spacepoint_formation_algorithm.hpp"
@@ -37,16 +39,14 @@ namespace traccc {
 ///
 /// At least as much as is implemented in the project at any given moment.
 ///
-class full_chain_algorithm : public algorithm<track_state_container_types::host(
-                                 const edm::silicon_cell_collection::host&)>,
-                             public messaging {
+class full_chain_algorithm
+    : public algorithm<edm::track_fit_collection<default_algebra>::host(
+          const edm::silicon_cell_collection::host&)>,
+      public messaging {
 
     public:
     /// @name Type declaration(s)
     /// @{
-
-    /// Detector type used during track finding and fitting
-    using detector_type = traccc::default_detector::host;
 
     /// Clusterization algorithm type
     using clustering_algorithm = host::clusterization_algorithm;
@@ -76,7 +76,8 @@ class full_chain_algorithm : public algorithm<track_state_container_types::host(
                          const finding_algorithm::config_type& finding_config,
                          const fitting_algorithm::config_type& fitting_config,
                          const silicon_detector_description::host& det_descr,
-                         const magnetic_field& field, detector_type* detector,
+                         const magnetic_field& field,
+                         const host_detector* detector,
                          std::unique_ptr<const traccc::Logger> logger);
 
     /// Reconstruct track parameters in the entire detector
@@ -87,7 +88,17 @@ class full_chain_algorithm : public algorithm<track_state_container_types::host(
     output_type operator()(
         const edm::silicon_cell_collection::host& cells) const override;
 
+    /// Reconstruct track seeds in the entire detector
+    ///
+    /// @param cells The cells for every detector module in the event
+    /// @return The track seeds reconstructed
+    ///
+    bound_track_parameters_collection_types::host seeding(
+        const edm::silicon_cell_collection::host& cells) const;
+
     private:
+    /// Memory resource
+    std::reference_wrapper<vecmem::memory_resource> m_mr;
     /// Vecmem copy object
     std::unique_ptr<vecmem::copy> m_copy;
     /// Constant B field for the (seed) track parameter estimation
@@ -99,7 +110,7 @@ class full_chain_algorithm : public algorithm<track_state_container_types::host(
     std::reference_wrapper<const silicon_detector_description::host>
         m_det_descr;
     /// Detector
-    detector_type* m_detector;
+    const host_detector* m_detector;
 
     /// @name Sub-algorithms used by this full-chain algorithm
     /// @{

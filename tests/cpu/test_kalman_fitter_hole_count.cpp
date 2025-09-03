@@ -7,8 +7,8 @@
 
 // Project include(s).
 #include "traccc/bfield/construct_const_bfield.hpp"
-#include "traccc/edm/track_state.hpp"
 #include "traccc/fitting/kalman_fitting_algorithm.hpp"
+#include "traccc/io/read_detector.hpp"
 #include "traccc/io/utils.hpp"
 #include "traccc/resolution/fitting_performance_writer.hpp"
 #include "traccc/simulation/event_generators.hpp"
@@ -67,12 +67,16 @@ TEST_P(KalmanFittingHoleCountTests, Run) {
 
     // Read back detector file
     const std::string path = name + "/";
-    detray::io::detector_reader_config reader_cfg{};
-    reader_cfg.add_file(path + "telescope_detector_geometry.json")
-        .add_file(path + "telescope_detector_homogeneous_material.json");
-
-    const auto [host_det, names] =
-        detray::io::read_detector<host_detector_type>(host_mr, reader_cfg);
+    traccc::host_detector detector;
+    traccc::io::read_detector(
+        detector, host_mr,
+        std::filesystem::absolute(
+            std::filesystem::path(path + "telescope_detector_geometry.json"))
+            .native(),
+        std::filesystem::absolute(
+            std::filesystem::path(
+                path + "telescope_detector_homogeneous_material.json"))
+            .native());
     auto field = traccc::construct_const_bfield(std::get<13>(GetParam()));
 
     /***************************
@@ -107,7 +111,7 @@ TEST_P(KalmanFittingHoleCountTests, Run) {
     std::filesystem::create_directories(full_path);
     auto sim = traccc::simulator<host_detector_type, b_field_t, generator_type,
                                  writer_type>(
-        ptc, n_events, host_det,
+        ptc, n_events, detector.as<detector_traits>(),
         field.as_field<traccc::const_bfield_backend_t<traccc::scalar>>(),
         std::move(generator), std::move(smearer_writer_cfg), full_path);
     sim.run();
@@ -117,7 +121,8 @@ TEST_P(KalmanFittingHoleCountTests, Run) {
      ***************/
 
     // Seed generator
-    seed_generator<host_detector_type> sg(host_det, stddevs);
+    seed_generator<host_detector_type> sg(detector.as<detector_traits>(),
+                                          stddevs);
 
     // Fitting algorithm object
     traccc::fitting_config fit_cfg;
@@ -156,24 +161,24 @@ TEST_P(KalmanFittingHoleCountTests, Run) {
 
     // Run fitting
     auto track_states =
-        fitting(host_det, field,
+        fitting(detector, field,
                 {vecmem::get_data(track_candidates.tracks),
                  vecmem::get_data(track_candidates.measurements)});
 
     // A sanity check
-    const std::size_t n_tracks = track_states.size();
+    const std::size_t n_tracks = track_states.tracks.size();
     ASSERT_EQ(n_tracks, n_truth_tracks);
 
     // Check the number of holes
     // The three holes at the end are not counted as KF aborts once it goes
     // through all track candidates
-    const auto& fit_res = track_states.at(0u).header;
-    ASSERT_EQ(fit_res.trk_quality.n_holes, 5u);
+    const auto track = track_states.tracks.at(0u);
+    ASSERT_EQ(track.nholes(), 5u);
 
     // Some sanity checks
     ASSERT_FLOAT_EQ(
-        static_cast<float>(fit_res.trk_quality.ndf),
-        static_cast<float>(track_states.at(0u).items.size()) * 2.f - 5.f);
+        static_cast<float>(track.ndf()),
+        static_cast<float>(track.state_indices().size()) * 2.f - 5.f);
 }
 
 INSTANTIATE_TEST_SUITE_P(

@@ -9,7 +9,7 @@
 #include "traccc/bfield/construct_const_bfield.hpp"
 #include "traccc/bfield/magnetic_field_types.hpp"
 #include "traccc/device/container_d2h_copy_alg.hpp"
-#include "traccc/edm/track_state.hpp"
+#include "traccc/edm/track_fit_container.hpp"
 #include "traccc/io/utils.hpp"
 #include "traccc/performance/details/is_same_object.hpp"
 #include "traccc/resolution/fitting_performance_writer.hpp"
@@ -95,7 +95,10 @@ TEST_P(KalmanFittingTelescopeTests, Run) {
 
     auto [host_det, names] =
         detray::io::read_detector<host_detector_type>(shared_mr, reader_cfg);
-    auto det_view = detray::get_data(host_det);
+
+    traccc::host_detector polymorphic_detector;
+    polymorphic_detector.set<detector_traits>(std::move(host_det));
+
     const auto field = traccc::construct_const_bfield(std::get<13>(GetParam()));
 
     /***************************
@@ -130,7 +133,7 @@ TEST_P(KalmanFittingTelescopeTests, Run) {
     std::filesystem::create_directories(full_path);
     auto sim = traccc::simulator<host_detector_type, b_field_t, generator_type,
                                  writer_type>(
-        ptc, n_events, host_det,
+        ptc, n_events, polymorphic_detector.as<detector_traits>(),
         field.as_field<traccc::const_bfield_backend_t<traccc::scalar>>(),
         std::move(generator), std::move(smearer_writer_cfg), full_path);
     sim.run();
@@ -141,17 +144,19 @@ TEST_P(KalmanFittingTelescopeTests, Run) {
 
     vecmem::sycl::copy copy{vecmem_queue};
 
-    traccc::device::container_d2h_copy_alg<traccc::track_state_container_types>
-        track_state_d2h{mr, copy};
-
     // Seed generator
-    seed_generator<host_detector_type> sg(host_det, stddevs);
+    seed_generator<host_detector_type> sg(
+        polymorphic_detector.as<detector_traits>(), stddevs);
 
     // Fitting algorithm object
     typename traccc::sycl::kalman_fitting_algorithm::config_type fit_cfg;
     fit_cfg.ptc_hypothesis = ptc;
     traccc::sycl::kalman_fitting_algorithm device_fitting(fit_cfg, mr, copy,
                                                           traccc_queue);
+
+    const traccc::detector_buffer detector_buffer =
+        traccc::buffer_from_host_detector(polymorphic_detector, device_mr,
+                                          copy);
 
     // Iterate over events
     for (std::size_t i_evt = 0; i_evt < n_events; i_evt++) {
@@ -176,32 +181,40 @@ TEST_P(KalmanFittingTelescopeTests, Run) {
                         mr.main, vecmem::copy::type::host_to_device)};
 
         // Run fitting
-        traccc::track_state_container_types::buffer track_states_sycl_buffer =
-            device_fitting(det_view, field,
+        auto track_states_sycl_buffer =
+            device_fitting(detector_buffer, field,
                            {track_candidates_buffer.tracks,
                             track_candidates_buffer.measurements});
 
-        traccc::track_state_container_types::host track_states_sycl =
-            track_state_d2h(track_states_sycl_buffer);
-        const std::size_t n_fitted_tracks =
-            count_successfully_fitted_tracks(track_states_sycl);
+        traccc::edm::track_fit_container<traccc::default_algebra>::host
+            track_states_sycl{host_mr};
+        copy(track_states_sycl_buffer.tracks, track_states_sycl.tracks,
+             vecmem::copy::type::device_to_host)
+            ->wait();
+        copy(track_states_sycl_buffer.states, track_states_sycl.states,
+             vecmem::copy::type::device_to_host)
+            ->wait();
 
-        ASSERT_EQ(track_states_sycl.size(), n_truth_tracks);
-        ASSERT_EQ(track_states_sycl.size(), n_fitted_tracks);
+        const std::size_t n_fitted_tracks =
+            count_successfully_fitted_tracks(track_states_sycl.tracks);
+
+        ASSERT_EQ(track_states_sycl.tracks.size(), n_truth_tracks);
+        ASSERT_EQ(track_states_sycl.tracks.size(), n_fitted_tracks);
 
         for (std::size_t i_trk = 0; i_trk < n_truth_tracks; i_trk++) {
 
-            const auto& track_states_per_track = track_states_sycl[i_trk].items;
-            const auto& fit_res = track_states_sycl[i_trk].header;
+            consistency_tests(track_states_sycl.tracks.at(i_trk),
+                              track_states_sycl.states);
 
-            consistency_tests(track_states_per_track);
+            ndf_tests(track_states_sycl.tracks.at(i_trk),
+                      track_states_sycl.states, track_candidates.measurements);
 
-            ndf_tests(fit_res, track_states_per_track);
+            ASSERT_EQ(track_states_sycl.tracks.at(i_trk).nholes(), 0u);
 
-            ASSERT_EQ(fit_res.trk_quality.n_holes, 0u);
-
-            fit_performance_writer.write(track_states_per_track, fit_res,
-                                         host_det, evt_data);
+            fit_performance_writer.write(
+                track_states_sycl.tracks.at(i_trk), track_states_sycl.states,
+                track_candidates.measurements,
+                polymorphic_detector.as<detector_traits>(), evt_data);
         }
     }
 
