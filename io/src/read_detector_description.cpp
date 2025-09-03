@@ -8,7 +8,7 @@
 // Library include(s).
 #include "traccc/io/read_detector_description.hpp"
 
-#include "csv/read_surfaces.hpp"
+#include "traccc/geometry/host_detector.hpp"
 #include "traccc/io/read_detector.hpp"
 #include "traccc/io/read_digitization_config.hpp"
 #include "traccc/io/utils.hpp"
@@ -42,22 +42,23 @@ void fill_digi_info(traccc::silicon_detector_description::host& dd,
     dd.dimensions().back() = data.dimensions;
 }
 
-void read_csv_dd(traccc::silicon_detector_description::host& dd,
-                 std::string_view geometry_file,
-                 const traccc::digitization_config& digi) {
+template <typename detector_traits_t>
+void read_json_dd_impl(traccc::silicon_detector_description::host& dd,
+                       const traccc::host_detector& detector,
+                       const traccc::digitization_config& digi)
+    requires(traccc::is_detector_traits<detector_traits_t>)
+{
+    const traccc::default_detector::host& detector_host =
+        detector.as<traccc::default_detector>();
 
-    // Read the geometry description as a map of surface tranformations.
-    const std::map<traccc::geometry_id, traccc::transform3> surfaces =
-        traccc::io::csv::read_surfaces(
-            traccc::io::get_absolute_path(geometry_file.data()));
-
-    // Fill the detector description with information about the (sensitive)
-    // surfaces, and the digitization configurations belonging to those
-    // surfaces.
+    // Iterate over the surfaces of the detector.
+    const typename detector_traits_t::host::surface_lookup_container& surfaces =
+        detector_host.surfaces();
     dd.reserve(surfaces.size());
-    for (const auto& [geom_id, transform] : surfaces) {
+    for (const auto& surface_desc : detector_host.surfaces()) {
 
-        // Acts geometry identifier for the surface.
+        // Acts geometry identifier(s) for the surface.
+        const traccc::geometry_id geom_id{surface_desc.source};
         const Acts::GeometryIdentifier acts_geom_id{geom_id};
 
         // Skip non-sensitive surfaces. They are not needed in the
@@ -69,12 +70,22 @@ void read_csv_dd(traccc::silicon_detector_description::host& dd,
         // Add a new element to the detector description.
         dd.resize(dd.size() + 1);
 
+        // Construct a Detray surface object.
+        const detray::tracking_surface surface{detector_host, surface_desc};
+
         // Fill the new element with the geometry ID and the transformation of
         // the surface in question.
-        dd.geometry_id().back() = detray::geometry::barcode{geom_id};
+        dd.geometry_id().back() = surface_desc.barcode();
         dd.acts_geometry_id().back() = geom_id;
         dd.measurement_translation().back() = {0.f, 0.f};
         dd.subspace().back() = {0, 1};
+
+        using annulus_t =
+            detray::mask<detray::annulus2D, traccc::default_algebra>;
+        if (surface_desc.mask().id() ==
+            detector_traits_t::host::masks::template get_id<annulus_t>()) {
+            dd.subspace().back() = {1, 0};
+        }
 
         // Find the module's digitization configuration.
         const traccc::digitization_config::Iterator digi_it =
@@ -99,60 +110,11 @@ void read_json_dd(traccc::silicon_detector_description::host& dd,
     // Construct a (temporary) Detray detector object from the geometry
     // configuration file.
     vecmem::host_memory_resource mr;
-    traccc::default_detector::host detector{mr};
+    traccc::host_detector detector;
     traccc::io::read_detector(detector, mr, geometry_file);
 
-    // Iterate over the surfaces of the detector.
-    const traccc::default_detector::host::surface_lookup_container& surfaces =
-        detector.surfaces();
-    dd.reserve(surfaces.size());
-    for (const auto& surface_desc : detector.surfaces()) {
-
-        // Acts geometry identifier(s) for the surface.
-        const traccc::geometry_id geom_id{surface_desc.source};
-        const Acts::GeometryIdentifier acts_geom_id{geom_id};
-
-        // Skip non-sensitive surfaces. They are not needed in the
-        // "detector description".
-        if (acts_geom_id.sensitive() == 0) {
-            continue;
-        }
-
-        // Add a new element to the detector description.
-        dd.resize(dd.size() + 1);
-
-        // Construct a Detray surface object.
-        const detray::tracking_surface surface{detector, surface_desc};
-
-        // Fill the new element with the geometry ID and the transformation of
-        // the surface in question.
-        dd.geometry_id().back() = surface_desc.barcode();
-        dd.acts_geometry_id().back() = geom_id;
-        dd.measurement_translation().back() = {0.f, 0.f};
-        dd.subspace().back() = {0, 1};
-
-        using annulus_t =
-            detray::mask<detray::annulus2D, traccc::default_algebra>;
-        if (surface_desc.mask().id() ==
-            traccc::default_detector::host::masks::template get_id<
-                annulus_t>()) {
-            dd.subspace().back() = {1, 0};
-        }
-
-        // Find the module's digitization configuration.
-        const traccc::digitization_config::Iterator digi_it =
-            digi.find(acts_geom_id);
-        if (digi_it == digi.end()) {
-            std::ostringstream msg;
-            msg << "Could not find digitization config for geometry ID: "
-                << acts_geom_id;
-            throw std::runtime_error(msg.str());
-        }
-
-        // Fill the new element with the digitization configuration for the
-        // surface.
-        fill_digi_info(dd, *digi_it);
-    }
+    read_json_dd_impl<traccc::default_detector>(dd, detector, digi);
+    // detector_buffer_visitor
 }
 
 }  // namespace
@@ -173,9 +135,6 @@ void read_detector_description(silicon_detector_description::host& dd,
     switch (geometry_format) {
         case data_format::json:
             ::read_json_dd(dd, geometry_file, digi);
-            break;
-        case data_format::csv:
-            ::read_csv_dd(dd, geometry_file, digi);
             break;
         default:
             throw std::invalid_argument("Unsupported geometry format.");

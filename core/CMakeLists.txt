@@ -21,10 +21,11 @@ traccc_add_library( traccc_core core TYPE SHARED
   "include/traccc/edm/details/device_container.hpp"
   "include/traccc/edm/details/host_container.hpp"
   "include/traccc/edm/measurement.hpp"
+  "include/traccc/edm/measurement_helpers.hpp"
+  "include/traccc/edm/impl/measurement_helpers.ipp"
   "include/traccc/edm/particle.hpp"
   "include/traccc/edm/track_parameters.hpp"
   "include/traccc/edm/container.hpp"
-  "include/traccc/edm/track_state.hpp"
   "include/traccc/edm/silicon_cell_collection.hpp"
   "include/traccc/edm/impl/silicon_cell_collection.ipp"
   "include/traccc/edm/silicon_cluster_collection.hpp"
@@ -35,6 +36,12 @@ traccc_add_library( traccc_core core TYPE SHARED
   "include/traccc/edm/track_candidate_collection.hpp"
   "include/traccc/edm/impl/track_candidate_collection.ipp"
   "include/traccc/edm/track_candidate_container.hpp"
+  "include/traccc/edm/track_state_collection.hpp"
+  "include/traccc/edm/impl/track_state_collection.ipp"
+  "include/traccc/edm/track_state_helpers.hpp"
+  "include/traccc/edm/impl/track_state_helpers.ipp"
+  "include/traccc/edm/track_fit_outcome.hpp"
+  "include/traccc/edm/track_fit_collection.hpp"
   # Magnetic field description.
   "include/traccc/bfield/magnetic_field_types.hpp"
   "include/traccc/bfield/magnetic_field.hpp"
@@ -79,8 +86,6 @@ traccc_add_library( traccc_core core TYPE SHARED
   "include/traccc/finding/details/combinatorial_kalman_filter.hpp"
   "include/traccc/finding/combinatorial_kalman_filter_algorithm.hpp"
   "src/finding/combinatorial_kalman_filter_algorithm.cpp"
-  "src/finding/combinatorial_kalman_filter_algorithm_default_detector.cpp"
-  "src/finding/combinatorial_kalman_filter_algorithm_telescope_detector.cpp"
   # Fitting algorithmic code
   "include/traccc/fitting/kalman_filter/gain_matrix_updater.hpp"
   "include/traccc/fitting/kalman_filter/kalman_actor.hpp"
@@ -92,8 +97,6 @@ traccc_add_library( traccc_core core TYPE SHARED
   "include/traccc/fitting/details/kalman_fitting.hpp"
   "include/traccc/fitting/kalman_fitting_algorithm.hpp"
   "src/fitting/kalman_fitting_algorithm.cpp"
-  "src/fitting/kalman_fitting_algorithm_default_detector.cpp"
-  "src/fitting/kalman_fitting_algorithm_telescope_detector.cpp"
   # Seed finding algorithmic code.
   "include/traccc/seeding/detail/lin_circle.hpp"
   "include/traccc/seeding/detail/doublet.hpp"
@@ -128,6 +131,7 @@ traccc_add_library( traccc_core core TYPE SHARED
   #gbts seed finding config
   "include/traccc/gbts_seeding/gbts_seeding_config.hpp"
   "src/gbts_seeding/gbts_seeding_config.cpp"
+ 
   # Ambiguity resolution
   "include/traccc/ambiguity_resolution/ambiguity_resolution_config.hpp"
   "include/traccc/ambiguity_resolution/greedy_ambiguity_resolution_algorithm.hpp"
