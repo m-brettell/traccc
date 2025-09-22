@@ -82,8 +82,8 @@ bool gbts_seedfinder_config::setLinkingScheme(const std::vector<std::pair<int, s
 	algo_params.dphi_coeff_low_dr*=ptScale;
 	algo_params.max_Kappa*=ptScale;
 
-	//contianers sizes
-	nLayers = layerInfo.isEndcap.size();
+	//containers sizes
+	nLayers = static_cast<unsigned int>(layerInfo.isEndcap.size());
 	
 	TRACCC_INFO("volume layer map has " << volumeToLayerMap_unordered.size() << " volumes");
 	TRACCC_INFO("The maxium volume index in the layer map is " << volumeToLayerMap.size());
