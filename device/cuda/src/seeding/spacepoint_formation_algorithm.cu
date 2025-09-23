@@ -7,6 +7,7 @@
 
 // Local include(s).
 #include "../utils/cuda_error_handling.hpp"
+#include "../utils/get_size.hpp"
 #include "../utils/global_index.hpp"
 #include "../utils/utils.hpp"
 #include "traccc/cuda/seeding/spacepoint_formation_algorithm.hpp"
@@ -20,9 +21,11 @@ namespace kernels {
 
 template <typename detector_t>
 __global__ void __launch_bounds__(1024, 1)
-    form_spacepoints(typename detector_t::view_type det_view,
+    form_spacepoints(typename detector_t::view det_view,
                      measurement_collection_types::const_view measurements_view,
-                     edm::spacepoint_collection::view spacepoints_view) {
+                     edm::spacepoint_collection::view spacepoints_view)
+    requires(traccc::is_detector_traits<detector_t>)
+{
 
     device::form_spacepoints<detector_t>(details::global_index1(), det_view,
                                          measurements_view, spacepoints_view);
@@ -30,21 +33,25 @@ __global__ void __launch_bounds__(1024, 1)
 
 }  // namespace kernels
 
-template <typename detector_t>
-spacepoint_formation_algorithm<detector_t>::spacepoint_formation_algorithm(
+spacepoint_formation_algorithm::spacepoint_formation_algorithm(
     const traccc::memory_resource& mr, vecmem::copy& copy, stream& str,
     std::unique_ptr<const Logger> logger)
     : messaging(std::move(logger)), m_mr(mr), m_copy(copy), m_stream(str) {}
 
-template <typename detector_t>
-edm::spacepoint_collection::buffer
-spacepoint_formation_algorithm<detector_t>::operator()(
-    const typename detector_t::view_type& det_view,
+edm::spacepoint_collection::buffer spacepoint_formation_algorithm::operator()(
+    const detector_buffer& detector,
     const measurement_collection_types::const_view& measurements_view) const {
+
+    // Get a convenience variable for the stream that we'll be using.
+    cudaStream_t stream = details::get_stream(m_stream);
+
+    // Staging area for copying sizes from device to host
+    vecmem::unique_alloc_ptr<unsigned int> size_staging_ptr =
+        vecmem::make_unique_alloc<unsigned int>(*(m_mr.host));
 
     // Get the number of measurements.
     const measurement_collection_types::const_view::size_type num_measurements =
-        m_copy.get().get_size(measurements_view);
+        get_size(measurements_view, size_staging_ptr.get(), stream);
 
     // Create the result buffer.
     edm::spacepoint_collection::buffer spacepoints(
@@ -56,25 +63,22 @@ spacepoint_formation_algorithm<detector_t>::operator()(
         return spacepoints;
     }
 
-    // Get a convenience variable for the stream that we'll be using.
-    cudaStream_t stream = details::get_stream(m_stream);
-
     // Launch parameters for the kernel.
     const unsigned int blockSize = 256;
     const unsigned int nBlocks = (num_measurements + blockSize - 1) / blockSize;
 
     // Launch the spacepoint formation kernel.
-    kernels::form_spacepoints<detector_t><<<nBlocks, blockSize, 0, stream>>>(
-        det_view, measurements_view, spacepoints);
+    detector_buffer_visitor<detector_type_list>(
+        detector, [&]<typename detector_traits_t>(
+                      const typename detector_traits_t::view& det) {
+            kernels::form_spacepoints<detector_traits_t>
+                <<<nBlocks, blockSize, 0, stream>>>(det, measurements_view,
+                                                    spacepoints);
+        });
+
     TRACCC_CUDA_ERROR_CHECK(cudaGetLastError());
 
     // Return the reconstructed spacepoints.
     return spacepoints;
 }
-
-// Explicit template instantiation
-template class spacepoint_formation_algorithm<default_detector::device>;
-template class spacepoint_formation_algorithm<telescope_detector::device>;
-template class spacepoint_formation_algorithm<toy_detector::device>;
-
 }  // namespace traccc::cuda

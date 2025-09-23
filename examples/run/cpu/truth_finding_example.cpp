@@ -7,12 +7,14 @@
 
 // Project include(s).
 #include "../common/make_magnetic_field.hpp"
+#include "../common/print_fitted_tracks_statistics.hpp"
 #include "traccc/definitions/common.hpp"
 #include "traccc/definitions/primitives.hpp"
 #include "traccc/efficiency/finding_performance_writer.hpp"
 #include "traccc/finding/combinatorial_kalman_filter_algorithm.hpp"
 #include "traccc/fitting/kalman_fitting_algorithm.hpp"
 #include "traccc/geometry/detector.hpp"
+#include "traccc/geometry/host_detector.hpp"
 #include "traccc/io/read_detector.hpp"
 #include "traccc/io/read_detector_description.hpp"
 #include "traccc/io/read_measurements.hpp"
@@ -24,6 +26,7 @@
 #include "traccc/options/program_options.hpp"
 #include "traccc/options/track_finding.hpp"
 #include "traccc/options/track_fitting.hpp"
+#include "traccc/options/track_matching.hpp"
 #include "traccc/options/track_propagation.hpp"
 #include "traccc/options/truth_finding.hpp"
 #include "traccc/resolution/fitting_performance_writer.hpp"
@@ -51,6 +54,7 @@ int seq_run(const traccc::opts::track_finding& finding_opts,
             const traccc::opts::magnetic_field& bfield_opts,
             const traccc::opts::performance& performance_opts,
             const traccc::opts::truth_finding& truth_finding_opts,
+            const traccc::opts::track_matching& track_matching_opts,
             std::unique_ptr<const traccc::Logger> ilogger) {
     TRACCC_LOCAL_LOGGER(std::move(ilogger));
 
@@ -61,7 +65,9 @@ int seq_run(const traccc::opts::track_finding& finding_opts,
 
     // Performance writer
     traccc::finding_performance_writer find_performance_writer(
-        traccc::finding_performance_writer::config{},
+        traccc::finding_performance_writer::config{
+            .truth_config = truth_finding_opts,
+            .track_truth_config = track_matching_opts},
         logger().clone("FindingPerformanceWriter"));
     traccc::fitting_performance_writer fit_performance_writer(
         traccc::fitting_performance_writer::config{},
@@ -75,11 +81,10 @@ int seq_run(const traccc::opts::track_finding& finding_opts,
     const auto field = traccc::details::make_magnetic_field(bfield_opts);
 
     // Construct a Detray detector object, if supported by the configuration.
-    traccc::default_detector::host detector{host_mr};
-    assert(detector_opts.use_detray_detector == true);
-    traccc::io::read_detector(detector, host_mr, detector_opts.detector_file,
-                              detector_opts.material_file,
-                              detector_opts.grid_file);
+    traccc::host_detector polymorphic_detector;
+    traccc::io::read_detector(
+        polymorphic_detector, host_mr, detector_opts.detector_file,
+        detector_opts.material_file, detector_opts.grid_file);
 
     /*****************************
      * Do the reconstruction
@@ -112,23 +117,30 @@ int seq_run(const traccc::opts::track_finding& finding_opts,
     traccc::host::kalman_fitting_algorithm host_fitting(
         fit_cfg, host_mr, copy, logger().clone("FittingAlg"));
 
-    // Seed generator
-    traccc::seed_generator<traccc::default_detector::host> sg(detector,
-                                                              stddevs);
-
     // Iterate over events
     for (std::size_t event = input_opts.skip;
          event < input_opts.events + input_opts.skip; ++event) {
 
         // Truth Track Candidates
         traccc::event_data evt_data(input_opts.directory, event, host_mr,
-                                    input_opts.use_acts_geom_source, &detector,
-                                    input_opts.format, false);
+                                    input_opts.use_acts_geom_source,
+                                    &polymorphic_detector, input_opts.format,
+                                    false);
 
         traccc::edm::track_candidate_container<traccc::default_algebra>::host
             truth_track_candidates{host_mr};
-        evt_data.generate_truth_candidates(truth_track_candidates, sg, host_mr,
-                                           truth_finding_opts.m_min_pt);
+
+        // Seed generator
+        host_detector_visitor<detector_type_list>(
+            polymorphic_detector,
+            [&]<typename detector_traits_t>(
+                const typename detector_traits_t::host& det) {
+                traccc::seed_generator<typename detector_traits_t::host> sg(
+                    det, stddevs);
+                evt_data.generate_truth_candidates(truth_track_candidates, sg,
+                                                   host_mr,
+                                                   truth_finding_opts.m_pT_min);
+            });
 
         // Prepare truth seeds
         traccc::bound_track_parameters_collection_types::host seeds(&host_mr);
@@ -142,39 +154,42 @@ int seq_run(const traccc::opts::track_finding& finding_opts,
             &host_mr};
         traccc::io::read_measurements(
             measurements_per_event, event, input_opts.directory,
-            (input_opts.use_acts_geom_source ? &detector : nullptr),
+            (input_opts.use_acts_geom_source ? &polymorphic_detector : nullptr),
             input_opts.format);
 
         // Run finding
         auto track_candidates = host_finding(
-            detector, field, vecmem::get_data(measurements_per_event),
-            vecmem::get_data(seeds));
+            polymorphic_detector, field,
+            vecmem::get_data(measurements_per_event), vecmem::get_data(seeds));
 
         std::cout << "Number of found tracks: " << track_candidates.size()
                   << std::endl;
 
         // Run fitting
         auto track_states =
-            host_fitting(detector, field,
+            host_fitting(polymorphic_detector, field,
                          {vecmem::get_data(track_candidates),
                           vecmem::get_data(measurements_per_event)});
 
-        print_fitted_tracks_statistics(track_states);
+        details::print_fitted_tracks_statistics(track_states, logger());
 
-        const std::size_t n_fitted_tracks = track_states.size();
+        const std::size_t n_fitted_tracks = track_states.tracks.size();
 
         if (performance_opts.run) {
             find_performance_writer.write(
-                vecmem::get_data(track_candidates),
-                vecmem::get_data(measurements_per_event), evt_data);
+                {vecmem::get_data(track_candidates),
+                 vecmem::get_data(measurements_per_event)},
+                evt_data);
 
             for (std::size_t i = 0; i < n_fitted_tracks; i++) {
-                const auto& trk_states_per_track = track_states.at(i).items;
-
-                const auto& fit_res = track_states[i].header;
-
-                fit_performance_writer.write(trk_states_per_track, fit_res,
-                                             detector, evt_data);
+                host_detector_visitor<detector_type_list>(
+                    polymorphic_detector,
+                    [&]<typename detector_traits_t>(
+                        const typename detector_traits_t::host& det) {
+                        fit_performance_writer.write(
+                            track_states.tracks.at(i), track_states.states,
+                            measurements_per_event, det, evt_data);
+                    });
             }
         }
     }
@@ -202,10 +217,12 @@ int main(int argc, char* argv[]) {
     traccc::opts::track_fitting fitting_opts;
     traccc::opts::performance performance_opts;
     traccc::opts::truth_finding truth_finding_config;
+    traccc::opts::track_matching track_matching_opts;
     traccc::opts::program_options program_opts{
         "Truth Track Finding on the Host",
         {detector_opts, bfield_opts, input_opts, finding_opts, propagation_opts,
-         fitting_opts, performance_opts, truth_finding_config},
+         fitting_opts, performance_opts, truth_finding_config,
+         track_matching_opts},
         argc,
         argv,
         logger->cloneWithSuffix("Options")};
@@ -213,5 +230,5 @@ int main(int argc, char* argv[]) {
     // Run the application.
     return seq_run(finding_opts, propagation_opts, fitting_opts, input_opts,
                    detector_opts, bfield_opts, performance_opts,
-                   truth_finding_config, logger->clone());
+                   truth_finding_config, track_matching_opts, logger->clone());
 }

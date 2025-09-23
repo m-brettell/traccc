@@ -6,7 +6,7 @@
 
 # Set up the project.
 cmake_minimum_required( VERSION 3.25 )
-project( traccc VERSION 0.22.0 LANGUAGES CXX )
+project( traccc VERSION 0.24.0 LANGUAGES CXX )
 
 # Set up the used C++ standard(s).
 set( CMAKE_CXX_STANDARD 20 CACHE STRING "The (host) C++ standard to use" )
@@ -84,6 +84,11 @@ endif()
 if(${TRACCC_BUILD_HIP} AND ${CMAKE_HIP_STANDARD} LESS 20)
    message(SEND_ERROR "CMAKE_HIP_STANDARD=${CMAKE_HIP_STANDARD}, but traccc requires C++>=20")
 endif()
+
+# In order to generate specializations for our kernels, we need to have both
+# a working Python interpreter, and a list of supported detectors.
+find_package (Python COMPONENTS Interpreter REQUIRED)
+set(TRACCC_SUPPORTED_DETECTORS "default_detector;telescope_detector;toy_detector")
 
 # Set up build profiling for the project.
 if( CTEST_USE_LAUNCHERS )
