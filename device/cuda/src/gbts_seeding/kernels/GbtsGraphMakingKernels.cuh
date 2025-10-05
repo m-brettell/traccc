@@ -32,8 +32,8 @@ inline __device__ __host__ half4 make_half4(const __half x, const __half y, cons
 }
 
 __global__ static void graphEdgeMakingKernel(const uint4* d_bin_pair_views, const float* d_bin_pair_dphi, const float* d_node_params, const gbts_algo_params* d_algo_params,
-												 unsigned int* d_counters, int2* d_edge_nodes, half4* d_edge_params, unsigned int* d_num_outgoing_edges, 
-												 unsigned int nMaxEdges, int nPhiBins) {
+                                             unsigned int* d_counters, int2* d_edge_nodes, half4* d_edge_params, int* d_num_outgoing_edges, 
+                                             const unsigned int nMaxEdges, const unsigned int nPhiBins) {
 	__shared__ unsigned int begin_bin1;
 	__shared__ unsigned int begin_bin2;
 	__shared__ unsigned int num_nodes1;
@@ -183,7 +183,7 @@ __global__ static void graphEdgeMakingKernel(const uint4* d_bin_pair_views, cons
 			float d0_max = (ftau < 4.0f) ? low_Kappa_d0 : high_Kappa_d0;
 			if(d0_for_max_curv > d0_max) continue;
 			
-			int nEdges = atomicAdd(&d_counters[0], 1);
+			unsigned int nEdges = atomicAdd(&d_counters[0], 1);
 			if(nEdges < nMaxEdges) {
 				__half exp_eta = __float2half(sqrtf(1 + tau*tau) - tau);
 				atomicAdd(&d_num_outgoing_edges[globalIdx2], 1);
@@ -194,20 +194,21 @@ __global__ static void graphEdgeMakingKernel(const uint4* d_bin_pair_views, cons
 	}
 }
 
-__global__ static void graphEdgeLinkingKernel(const int2* d_edge_nodes, int* d_edge_links, unsigned int* d_num_outgoing_edges, int nEdges) {
+__global__ static void graphEdgeLinkingKernel(const int2* d_edge_nodes, int* d_edge_links, int* d_num_outgoing_edges, const unsigned int nEdges) {
 
 	int edge_idx = blockIdx.x * blockDim.x + threadIdx.x;
 
 	if(edge_idx >= nEdges) return;
 	int n2Idx = d_edge_nodes[edge_idx].y;//global index of n2
 
-	unsigned int pos = atomicSub(&d_num_outgoing_edges[n2Idx], 1); //this converts num_outgoing_edges to the start postion for each node in d_edge_links
+	int pos = atomicSub(&d_num_outgoing_edges[n2Idx], 1); //this converts num_outgoing_edges to the start postion for each node in d_edge_links
 	d_edge_links[pos-1] = edge_idx; //this edge starts from n2, matching will check edge's n1 and then loop over edges outgoing from that node
 }
 
 __global__ static void graphEdgeMatchingKernel(const gbts_algo_params* d_algo_params, const half4* d_edge_params, const int2* d_edge_nodes, 
-												   const unsigned int* d_num_outgoing_edges, const int* d_edge_links, 
-												   unsigned char* d_num_neighbours, int* d_neighbours, int* d_reIndexer, unsigned int* d_counters, int nEdges, int nMaxNei) {
+                                               const int* d_num_outgoing_edges, const int* d_edge_links, 
+                                               unsigned char* d_num_neighbours, int* d_neighbours, int* d_reIndexer, unsigned int* d_counters,
+                                               const unsigned int nEdges, const unsigned int nMaxNei) {
 	__shared__ __half cut_dphi_max;
 	__shared__ __half cut_dcurv_max;
 	__shared__ __half cut_tau_ratio_max;
@@ -237,13 +238,13 @@ __global__ static void graphEdgeMatchingKernel(const gbts_algo_params* d_algo_pa
 
 	half4 params1 = d_edge_params[edge1_idx]; // [exp_eta, curv, Phi1, Phi2]
 
-	__half uat_2  = ONE_h/params1.x;
-	__half Phi2   = params1.z;
-	__half curv2  = params1.y;
+	__half uat_2 = ONE_h/params1.x;
+	__half Phi2  = params1.z;
+	__half curv2 = params1.y;
 
 	int nei_pos  = nMaxNei*edge1_idx;
 
-	unsigned char num_nei  = 0;
+	unsigned char num_nei = 0;
 
 	for(int k=0;k<nLinks;k++) {//loop over potential neighbours
 
@@ -287,7 +288,7 @@ __global__ static void graphEdgeMatchingKernel(const gbts_algo_params* d_algo_pa
 	}
 }
 
-__global__ void edgeReIndexingKernel(int* d_reIndexer, unsigned int* d_counters, int nEdges) {
+__global__ void edgeReIndexingKernel(int* d_reIndexer, unsigned int* d_counters, const unsigned int nEdges) {
 
 	//each thread gets an edge      
 
@@ -300,10 +301,10 @@ __global__ void edgeReIndexingKernel(int* d_reIndexer, unsigned int* d_counters,
 	d_reIndexer[edge_idx] = atomicAdd(&d_counters[2], 1);
 }
 
-__global__ static void graphCompressionKernel(const int* d_orig_node_index, 
-												  const int2* d_edge_nodes, const unsigned char* d_num_neighbours, const int* d_neighbours, 
-												  const int* d_reIndexer, int* d_output_graph, int nEdgesPerBlock, int nEdges, int nMaxNei) {
-	 
+__global__ static void graphCompressionKernel(const int* d_orig_node_index, const int2* d_edge_nodes, const unsigned char* d_num_neighbours,
+                                              const int* d_neighbours, const int* d_reIndexer, int* d_output_graph,
+                                              const unsigned int nEdgesPerBlock, const unsigned int nEdges, const unsigned int nMaxNei) {
+
 	int begin_edge = blockIdx.x * nEdgesPerBlock;
 	int edge_size  = 2 + 1 + nMaxNei;
 
@@ -313,6 +314,7 @@ __global__ static void graphCompressionKernel(const int* d_orig_node_index,
 
 		int newIdx = d_reIndexer[idx];
 		if (newIdx == -1) continue;
+		
 		int pos = edge_size*newIdx;
 		int2 edge_nodes = d_edge_nodes[idx];
 		int node1_idx = d_orig_node_index[edge_nodes.x];

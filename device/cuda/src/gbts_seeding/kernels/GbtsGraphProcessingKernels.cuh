@@ -59,10 +59,10 @@ struct Tracklet {
 *  @param[internal] d_counters[5 and 6] used for counting the last block and for the number of active edges 
 */
 __global__ static void CCA_IterationKernel(const int* d_output_graph, char* d_levels, int* d_active_edges, int* d_level_views,
-                                           int* d_level_boundaries, unsigned int* d_counters, int iter, int nEdges, int max_num_neighbours) {
+                                           int* d_level_boundaries, unsigned int* d_counters, int iter, unsigned int nEdges, unsigned int max_num_neighbours) {
 
-	__shared__ int nEdgesLeft;
-	int edge_size = 2 + 1 + max_num_neighbours;
+	__shared__ unsigned int nEdgesLeft;
+	unsigned int edge_size = 2 + 1 + max_num_neighbours;
 
 	int toggle     = iter%2;
 	int levelLoad  = toggle*nEdges;
@@ -97,7 +97,7 @@ __global__ static void CCA_IterationKernel(const int* d_output_graph, char* d_le
 		}
 		// add all remianing edges to level_views on the last iteration
 		if(localChange && iter < traccc::device::gbts_consts::max_cca_iter - 1) {
-			int edgesLeftPlace = atomicAdd(&d_counters[4-toggle], 1); //nChanges
+			unsigned int edgesLeftPlace = atomicAdd(&d_counters[4-toggle], 1); //nChanges
 			d_active_edges[edgesLeftPlace] = edgeIdx;//for the next iteration
 		}
 		else {
@@ -350,7 +350,8 @@ inline __device__ void add_seed_proposal(const int m_J, const int mini_idx, cons
 */
 __global__ void seed_extracting_kernel(int view_min, int view_max, int* d_level_views, char* d_levels, float4* d_sp_params, int* d_output_graph, 
                      int2* d_mini_states, edgeState* d_state_store, unsigned long long int* d_edge_bids, char* d_seed_ambiguity, int2* d_seed_proposals, Tracklet* d_seeds,
-                     unsigned int* d_counters, int minLevel, int nMaxMini, int nMaxProps, int nMaxStateStorePerBlock, int nMaxSeeds, int max_num_neighbours) {
+                     unsigned int* d_counters, const int minLevel, const unsigned int nMaxMini, const unsigned int nMaxProps, const unsigned int nMaxStateStorePerBlock,
+                     const unsigned int nMaxSeeds, const unsigned int max_num_neighbours) {
 
 	__shared__ int block_start;
 
@@ -361,19 +362,17 @@ __global__ void seed_extracting_kernel(int view_min, int view_max, int* d_level_
 	__shared__ edgeState current_states[traccc::device::gbts_consts::shared_state_buffer_size];
 
 	int edge_size = 2 + 1 + max_num_neighbours;
-	//TO-DO? each block to take the same distribution of levels
 	if(threadIdx.x == 0) {
 		total_live_states = 0;
 		
 		int total_nStates = view_max - view_min;
 		nStates = 1+(total_nStates-1)/gridDim.x;
-			
+		
 		block_start = view_min + nStates*blockIdx.x;
 		if(block_start >= view_max) nStates = 0;
 		else if(block_start + nStates >= view_max) nStates = view_max - block_start;
 	}
 	__syncthreads();
-	//TO-DO? allow for intialization in global
 	//assign root edges to blocks and populate shared with inital states
 	//must have less input than shared space
 	for(int root_edge_idx = threadIdx.x; root_edge_idx<nStates; root_edge_idx+=blockDim.x) {
@@ -391,10 +390,9 @@ __global__ void seed_extracting_kernel(int view_min, int view_max, int* d_level_
 		current_states[root_idx].initialize(node1_params, node2_params);
 		current_states[root_idx].m_edge_idx = edge_idx;
 		
-		int mini_idx = atomicAdd(&d_counters[7], 1);
+		unsigned int mini_idx = atomicAdd(&d_counters[7], 1);
 		d_mini_states[mini_idx] = make_int2(edge_idx, -1); //prev mini -1 for roots with no prev
 		current_states[root_idx].m_mini_idx = mini_idx;
-		
 	}
 	__syncthreads();
 	if(threadIdx.x == 0) nStates = total_live_states; //update after removed edges are exculded
@@ -422,13 +420,13 @@ __global__ void seed_extracting_kernel(int view_min, int view_max, int* d_level_
 			
 			int edge_pos = edge_idx*edge_size;
 			
-			int nNei = d_output_graph[edge_pos + traccc::device::gbts_consts::nNei];
+			unsigned char nNei = d_output_graph[edge_pos + traccc::device::gbts_consts::nNei];
 			
 			char edge_level = d_levels[edge_idx];
 			
 			bool no_updates = true;
-			
-			for(unsigned char nei = 0;nei<nNei;nei++) {
+			for(unsigned char nei = 0; nei<nNei; nei++) {
+				
 				int nei_idx  = d_output_graph[edge_pos + traccc::device::gbts_consts::nei_start + nei];
 				
 				char nei_level = d_levels[nei_idx];
@@ -445,17 +443,16 @@ __global__ void seed_extracting_kernel(int view_min, int view_max, int* d_level_
 				
 				if(new_state.m_mini_idx < nMaxMini) {
 					d_mini_states[new_state.m_mini_idx] = make_int2(nei_idx, state.m_mini_idx);
-						
 					if(d_output_graph[edge_size*nei_idx + traccc::device::gbts_consts::nNei] == 0) { //no neighbours so will fail next round anyway so save shared
 						if(new_state.m_length >= minLevel) {
-							int prop_idx = atomicAdd(&d_counters[8], 1);
+							unsigned int prop_idx = atomicAdd(&d_counters[8], 1);
 							if(prop_idx < nMaxProps) add_seed_proposal(new_state.m_J, new_state.m_mini_idx, prop_idx, d_seed_ambiguity, d_seed_proposals, d_edge_bids, d_mini_states);
 						}
 					}
 					else {
 						int stateStoreIdx = atomicAdd(&total_live_states, 1) - traccc::device::gbts_consts::shared_state_buffer_size; 
 						if(stateStoreIdx<nSharedSpace) {current_states[atomicAdd(&nStates, 1)] = new_state;}
-						else { //TO-DO? make state_store shared between blocks
+						else {
 							if(stateStoreIdx<nMaxStateStorePerBlock) d_state_store[stateStoreIdx+nMaxStateStorePerBlock*blockIdx.x] = new_state;
 							else d_counters[10] = stateStoreIdx;
 						}
@@ -464,7 +461,7 @@ __global__ void seed_extracting_kernel(int view_min, int view_max, int* d_level_
 			}
 			if(no_updates) {
 				if(state.m_length >= minLevel) {
-					int prop_idx = atomicAdd(&d_counters[8], 1);
+					unsigned int prop_idx = atomicAdd(&d_counters[8], 1);
 					if(prop_idx < nMaxProps ) add_seed_proposal(state.m_J, state.m_mini_idx, prop_idx, d_seed_ambiguity, d_seed_proposals, d_edge_bids, d_mini_states);
 				}
 			}
@@ -472,13 +469,12 @@ __global__ void seed_extracting_kernel(int view_min, int view_max, int* d_level_
 		__syncthreads(); //wait for current_states to repopulate
 	}
 	__syncthreads();
-	//move remianing seed props to seeds after all tracking for this set is done //seperate kernel?
+	//move remianing seed props to seeds after all tracking for this set is done
 	if(threadIdx.x == 0) nStates = atomicAdd(&d_counters[11], 1);
 	__syncthreads();
 	if(nStates != gridDim.x-1) return;
 	unsigned int nProps = d_counters[8];
 	__syncthreads();
-
 	//reset for next launch
 	if(threadIdx.x == 0) {
 		//exit if any overflows have occured
@@ -491,11 +487,10 @@ __global__ void seed_extracting_kernel(int view_min, int view_max, int* d_level_
 	}
 	__syncthreads();
 	if(nProps == 0 || nStates == 0) return; 
-		
 	for(int round=0; round<5 && nStates > 0 ;round++) { //re-check maybe seeds that don't clash with a definte seed
 		if(threadIdx.x == 0) nStates = 0;
 		__syncthreads(); // fit maybe seeds into unused spaces  
-		for(int prop_idx = threadIdx.x; prop_idx<nProps; prop_idx+=blockDim.x) {
+		for(unsigned int prop_idx = threadIdx.x; prop_idx<nProps; prop_idx+=blockDim.x) {
 			
 			char ambiguity = d_seed_ambiguity[prop_idx];
 			if(ambiguity == 0 || ambiguity == -2)  continue; //is not ambiguous  
@@ -519,7 +514,7 @@ __global__ void seed_extracting_kernel(int view_min, int view_max, int* d_level_
 			else d_seed_ambiguity[prop_idx] = -2; //definate fake
 		}
 		__syncthreads();
-		for(int prop_idx = threadIdx.x; prop_idx<nProps; prop_idx+=blockDim.x) {    
+		for(unsigned int prop_idx = threadIdx.x; prop_idx<nProps; prop_idx+=blockDim.x) {    
 			if(d_seed_ambiguity[prop_idx] != 1) continue;
 
 			int2 prop = d_seed_proposals[prop_idx];
@@ -529,7 +524,7 @@ __global__ void seed_extracting_kernel(int view_min, int view_max, int* d_level_
 		__syncthreads();            
 	}
 	__syncthreads();
-	for(int prop_idx = threadIdx.x; prop_idx<nProps; prop_idx+=blockDim.x) {
+	for(unsigned int prop_idx = threadIdx.x; prop_idx<nProps; prop_idx+=blockDim.x) {
 		if(d_seed_ambiguity[prop_idx] != 0) continue;           
 		int2 prop = d_seed_proposals[prop_idx];     
 		
@@ -554,7 +549,7 @@ __global__ void seed_extracting_kernel(int view_min, int view_max, int* d_level_
 
 }
 
-void __global__ gbts_seed_conversion_kernel(Tracklet* d_seeds, edm::seed_collection::view output_seeds, int nSeeds) {
+void __global__ gbts_seed_conversion_kernel(Tracklet* d_seeds, edm::seed_collection::view output_seeds, const unsigned int nSeeds) {
 
 	edm::seed_collection::device seeds_device(output_seeds);
 	for(int tracklet = threadIdx.x + blockIdx.x*blockDim.x; tracklet < nSeeds; tracklet += blockDim.x*gridDim.x) {
