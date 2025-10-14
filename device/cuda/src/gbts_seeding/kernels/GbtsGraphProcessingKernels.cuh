@@ -75,8 +75,8 @@ struct Tracklet {
  */
 __global__ static void CCA_IterationKernel(
     const int* d_output_graph, char* d_levels, int* d_active_edges,
-    int* d_level_views, int* d_level_boundaries, unsigned int* d_counters,
-    int iter, unsigned int nEdges, unsigned int max_num_neighbours) {
+    short2* d_outgoing_paths, unsigned int* d_counters, int iter,
+	unsigned int nEdges, unsigned int max_num_neighbours, unsigned int minLevel) {
 
     __shared__ unsigned int nEdgesLeft;
     unsigned int edge_size = 2 + 1 + max_num_neighbours;
@@ -123,7 +123,21 @@ __global__ static void CCA_IterationKernel(
             unsigned int edgesLeftPlace = atomicAdd(&d_counters[4 - toggle], 1);
             d_active_edges[edgesLeftPlace] = edgeIdx;  // for the next iteration
         } else {
-            d_level_views[atomicAdd(&d_counters[6], 1)] = edgeIdx;
+			short out_paths = 0;
+			for(int nIdx = 0; nIdx < nNei; ++nIdx) {
+				int nextEdgeIdx =
+					d_output_graph[edge_pos +
+								   traccc::device::gbts_consts::nei_start + nIdx];
+				if(next_level == 1 + d_levels[nextEdgeIdx]) {
+					// calculate the #d_state_store nodes for segment extraction
+					// starting at this edge 
+					out_paths += 1 + d_outgoing_paths[nextEdgeIdx].x;
+				}
+				// flag as not terminus edge
+				d_outgoing_paths[edgeIdx].y = -1;
+			}
+			//flag as long enough segement to become a seed
+			d_outgoing_paths[edgeIdx] = make_short2(out_paths, (next_level >= minLevel) - 1);
         }
         // store new level and ensure all final
         // levels are on both sides of the array
@@ -134,11 +148,112 @@ __global__ static void CCA_IterationKernel(
     if (threadIdx.x == 0) {
         if (atomicAdd(&d_counters[5], 1) == gridDim.x - 1) {
             // this is the last block
-            d_level_boundaries[iter] = nEdgesLeft;
             d_counters[3 + toggle] = 0;
             d_counters[5] = 0;
         }
     }
+}
+
+void __global__ count_terminus_edges(int2* d_path_store, short2* d_outgoing_paths, int* d_counters, unsigned int nEdges) {
+		
+	__shared__ int outgoingCount;
+
+	if(threadIdx.x == 0) {
+		outgoingCount = 0;
+	}
+	__syncthreads();
+
+	int edge_idx = threadIdx.x + blockIdx.x*blockDim.x;
+	if(edge_idx >= nEdges) {
+		return;
+	}
+	short2 out_edge = d_outgoing_paths[edge_idx];
+	// only count terminus edges that could lead to a seed
+	if(out_edge.y == -1) {
+		return;
+	}
+	// terminus edges link back to nothing (-1)
+	d_path_store[atomicAdd(&d_counters[7], 1)] = make_int2(edge_idx, -1);
+	atomicAdd(&outgoingCount, out_edge.x);
+	
+	__syncthreads();
+	if(threadIdx.x == 0) {
+		atomicAdd(&d_counters[6], outgoingCount);
+	}
+}
+
+void __global__ fill_state_store(int2* d_path_store, int* d_output_graph, char* d_levels, unsigned int* d_counters , unsigned int nTerminus, unsigned int max_num_neighbours) {
+	
+	__shared__ int2 live_paths[traccc::device::gbts_consts::live_path_buffer];
+	__shared__ int n_live_paths;
+	
+	if(threadIdx.x == 0) {
+		n_live_paths = 0;
+	}		
+	__syncthreads();
+
+	int edge_size = 2 + 1 + max_num_neighbours;
+
+	int path_idx = threadIdx.x + blockIdx.x*blockDim.x;
+	// populate live_paths with terminus
+	if(path_idx < nTerminus) {
+		int2 path = d_path_store[path_idx];
+		
+		int nNei = d_output_graph[traccc::device::gbts_consts::nNei + edge_size*path.x];
+		char level = d_levels[path.x];
+		for(int nei = 0; nei < nNei; ++nei) {
+			int edge_idx = d_output_graph[traccc::device::gbts_consts::nei_start + nei + edge_size*path.x];
+			// only search down longest segments
+			if(level != d_levels[edge_idx] + 1) {
+				continue;
+			}
+			int live_idx = atomicAdd(&n_live_paths, 1);
+			if(live_idx >= traccc::device::gbts_consts::live_path_buffer) {
+				break;
+			} 
+			// head edge idx, link back
+			live_paths[live_idx] = make_int2(edge_idx, path_idx);	
+		}
+	}
+	__syncthreads();
+
+	int2 path = make_int2(0, 0);
+	bool has_path = false;
+	
+	while(n_live_paths > 0) {
+		has_path = false;
+		// get path
+		if(threadIdx.x < n_live_paths) {
+			path = live_paths[n_live_paths - threadIdx.x -1];
+			has_path = true;
+		}
+		__syncthreads();
+		if(threadIdx.x == 0) {
+			n_live_paths = min(n_live_paths, traccc::device::gbts_consts::live_path_buffer);
+			n_live_paths = n_live_paths < blockDim.x ? 0 : n_live_paths - blockDim.x;
+		}
+		__syncthreads();
+		if(has_path) {
+			int nNei = d_output_graph[traccc::device::gbts_consts::nNei + edge_size*path.x];
+			char level = d_levels[path.x];
+			for(int nei = 0; nei < nNei; ++nei) {
+				int edge_idx = d_output_graph[traccc::device::gbts_consts::nei_start + nei + edge_size*path.x];
+				// only search down longest segments
+				if(level != d_levels[edge_idx] + 1) {
+					continue;
+				}
+				int live_idx = atomicAdd(&n_live_paths, 1);
+				if(live_idx >= traccc::device::gbts_consts::live_path_buffer) {
+					break;
+				}	
+				path_idx = atomicAdd(&d_counters[7], 1);
+				// head edge idx, link back
+				d_path_store[path_idx] = make_int2(edge_idx, path.y); 
+				live_paths[live_idx] = make_int2(edge_idx, path_idx);	
+			}
+		}
+		__syncthreads();	
+	}
 }
 
 /** @brief initialize the Kalman filter for this new edgeState from the starting
@@ -401,337 +516,6 @@ inline __device__ void add_seed_proposal(const int m_J, const int mini_idx,
 
         next_mini = mini_state.y;
     }
-}
-
-/** @brief This kerenel extracts the seeds from the graph starting with sets of
- * edges with simmlar levels
- *
- *  We start with higher levels so that the best seeds are found first and
- * pruned from the graph The last block to finsh perfoms disambiguation through
- * iteritive biding and fills d_seeds with the winning seeds with the nodes in
- * inside-out order
- *
- *  @param[in] view_min/view_max the range of input edges in the d_level_views
- * to start forming seeds from
- *  @param[in] d_level_views view on the edges of d_output_graph calculated by
- * the CCA
- *  @param[in/out] d_levels the level of each edge by edge, -1 signifes an edge
- * that is allready used in seed found from a previous iteration and so has been
- * removed from the graph
- *  @param[in] d_sp_params x,y,z,cluster-width for all nodes. Here cluster width
- * denotes if a sp is in the barrel (cw != -1 => barrel)
- *  @param[in] d_output_graph stores the nodes, number of neighbours and
- * self-referential neighbour index.
- *  @param[in] minLevel is length, in edges, of the smallest accepable seed (and
- * is 3 by default so 4 space points)
- *  @param[internal] d_counters[7,8 and 10] are used to track the length of
- * d_mini_state, d_seed_proposals and number of finished blocks
- *  @param[internal] d_seed_ambiguity, d_edge_bids used in seed diambiguation
- * for details see add_seed_proposal
- *  @param[internal] d_mini_states stores the path each seed took through the
- * graph in reverse order (inside out)
- *  @param[internal] d_seed_proposals stores the infomation needed to construct
- * an output Tracklet for this seed
- *  @param[out] d_seeds stores the output seeds after disambiguation. This is
- * what gets transfered back to CPU and is the final output of these kernels
- *  @param[out] d_counters[9] number of seeds in d_seeds
- */
-__global__ void seed_extracting_kernel(
-    int view_min, int view_max, int* d_level_views, char* d_levels,
-    float4* d_sp_params, int* d_output_graph, int2* d_mini_states,
-    edgeState* d_state_store, unsigned long long int* d_edge_bids,
-    char* d_seed_ambiguity, int2* d_seed_proposals, Tracklet* d_seeds,
-    unsigned int* d_counters, const int minLevel, const unsigned int nMaxMini,
-    const unsigned int nMaxProps, const unsigned int nMaxStateStorePerBlock,
-    const unsigned int nMaxSeeds, const unsigned int max_num_neighbours) {
-
-    __shared__ int block_start;
-
-    __shared__ int total_live_states;
-    __shared__ int nStates;
-    __shared__ int nSharedSpace;
-
-    __shared__ edgeState
-        current_states[traccc::device::gbts_consts::shared_state_buffer_size];
-
-    int edge_size = 2 + 1 + max_num_neighbours;
-    if (threadIdx.x == 0) {
-        total_live_states = 0;
-
-        int total_nStates = view_max - view_min;
-        nStates = 1 + (total_nStates - 1) / gridDim.x;
-
-        block_start = view_min + nStates * blockIdx.x;
-        if (block_start >= view_max) {
-            nStates = 0;
-        } else if (block_start + nStates >= view_max) {
-            nStates = view_max - block_start;
-        }
-    }
-    __syncthreads();
-    // assign root edges to blocks and populate shared with inital states
-    // must have less input than shared space
-    for (int root_edge_idx = threadIdx.x; root_edge_idx < nStates;
-         root_edge_idx += blockDim.x) {
-
-        int edge_idx = d_level_views[block_start + root_edge_idx];
-        char level = d_levels[edge_idx];
-        if (level == -1) {
-            continue;
-        }
-        int edge_pos = edge_size * edge_idx;
-
-        float4 node1_params =
-            d_sp_params[d_output_graph[edge_pos +
-                                       traccc::device::gbts_consts::node1]];
-        float4 node2_params =
-            d_sp_params[d_output_graph[edge_pos +
-                                       traccc::device::gbts_consts::node2]];
-
-        int root_idx = atomicAdd(&total_live_states, 1);
-        current_states[root_idx].initialize(node1_params, node2_params);
-        current_states[root_idx].m_edge_idx = edge_idx;
-
-        unsigned int mini_idx = atomicAdd(&d_counters[7], 1);
-        d_mini_states[mini_idx] =
-            make_int2(edge_idx, -1);  // prev mini -1 for roots with no prev
-        current_states[root_idx].m_mini_idx = mini_idx;
-    }
-    __syncthreads();
-    if (threadIdx.x == 0) {
-        nStates = total_live_states;  // update after removed edges are exculded
-    }
-    edgeState state;
-    edgeState new_state;
-
-    __syncthreads();
-    while (total_live_states > 0) {
-        // propogate to next level
-        bool has_state = false;
-        if (threadIdx.x < nStates) {
-            state = current_states[nStates - 1 - threadIdx.x];
-            has_state = true;
-        } else if (threadIdx.x < total_live_states) {
-            state = d_state_store[total_live_states - 1 - threadIdx.x +
-                                  nMaxStateStorePerBlock * blockIdx.x];
-            has_state = true;
-        }
-        __syncthreads();
-        if (threadIdx.x == 0) {  // update state counts
-            total_live_states = (total_live_states < blockDim.x)
-                                    ? 0
-                                    : total_live_states - blockDim.x;
-
-            nStates = (nStates < blockDim.x) ? 0 : nStates - blockDim.x;
-            nSharedSpace = total_live_states - nStates;
-            // total state count when shared memory is
-            // filled - max shared states
-        }
-        __syncthreads();
-        if (has_state) {
-
-            int edge_idx = state.m_edge_idx;
-
-            int edge_pos = edge_idx * edge_size;
-
-            unsigned char nNei =
-                d_output_graph[edge_pos + traccc::device::gbts_consts::nNei];
-
-            char edge_level = d_levels[edge_idx];
-
-            bool no_updates = true;
-            for (unsigned char nei = 0; nei < nNei; nei++) {
-
-                int nei_idx =
-                    d_output_graph[edge_pos +
-                                   traccc::device::gbts_consts::nei_start +
-                                   nei];
-
-                char nei_level = d_levels[nei_idx];
-                if (edge_level - 1 != nei_level) {
-                    continue;
-                }
-                float4 node1_params = d_sp_params
-                    [d_output_graph[edge_size * nei_idx +
-                                    traccc::device::gbts_consts::node1]];
-                bool success = update(&new_state, &state, node1_params);
-
-                if (!success) {
-                    continue;
-                }
-                no_updates = false;
-
-                new_state.m_edge_idx = nei_idx;
-                new_state.m_mini_idx = atomicAdd(&d_counters[7], 1);
-
-                if (new_state.m_mini_idx < nMaxMini) {
-                    d_mini_states[new_state.m_mini_idx] =
-                        make_int2(nei_idx, state.m_mini_idx);
-                    if (d_output_graph[edge_size * nei_idx +
-                                       traccc::device::gbts_consts::nNei] ==
-                        0) {
-
-                        // no neighbours so will fail next round anyway
-                        // so save shared
-                        if (new_state.m_length >= minLevel) {
-                            unsigned prop_idx = atomicAdd(&d_counters[8], 1);
-                            if (prop_idx < nMaxProps) {
-                                add_seed_proposal(new_state.m_J,
-                                                  new_state.m_mini_idx,
-                                                  prop_idx, d_seed_ambiguity,
-                                                  d_seed_proposals, d_edge_bids,
-                                                  d_mini_states);
-                            }
-                        }
-
-                    } else {
-                        int stateStoreIdx = atomicAdd(&total_live_states, 1) -
-                                            traccc::device::gbts_consts::
-                                                shared_state_buffer_size;
-
-                        if (stateStoreIdx < nSharedSpace) {
-                            current_states[atomicAdd(&nStates, 1)] = new_state;
-                        } else {
-                            if (stateStoreIdx < nMaxStateStorePerBlock) {
-                                d_state_store[stateStoreIdx +
-                                              nMaxStateStorePerBlock *
-                                                  blockIdx.x] = new_state;
-                            } else {
-                                d_counters[10] = stateStoreIdx;
-                            }
-                        }
-                    }
-                }
-            }
-            if (no_updates) {
-                if (state.m_length >= minLevel) {
-                    unsigned int prop_idx = atomicAdd(&d_counters[8], 1);
-                    if (prop_idx < nMaxProps) {
-                        add_seed_proposal(state.m_J, state.m_mini_idx, prop_idx,
-                                          d_seed_ambiguity, d_seed_proposals,
-                                          d_edge_bids, d_mini_states);
-                    }
-                }
-            }
-        }  // if has state
-        __syncthreads();  // wait for current_states to repopulate
-    }
-    __syncthreads();
-    // move remianing seed props to seeds after
-    // all tracking for this set is done
-    if (threadIdx.x == 0) {
-        nStates = atomicAdd(&d_counters[11], 1);
-    }
-    __syncthreads();
-    if (nStates != gridDim.x - 1) {
-        return;
-    }
-    unsigned int nProps = d_counters[8];
-    __syncthreads();
-    // reset for next launch
-    if (threadIdx.x == 0) {
-        // exit if any overflows have occured
-        if (nProps > nMaxProps || d_counters[7] > nMaxMini ||
-            d_counters[10] != 0) {
-
-            nStates = 0;
-        } else {
-            nStates = 1;
-        }
-        d_counters[11] = 0;
-        d_counters[10] = 0;
-        d_counters[7] = 0;
-        d_counters[8] = 0;
-    }
-    __syncthreads();
-    if (nProps == 0 || nStates == 0) {
-        return;
-    }
-    for (int round = 0; round < 5 && nStates > 0; round++) {
-        // re-check maybe seeds that don't clash with a definte seed
-        if (threadIdx.x == 0) {
-            nStates = 0;
-        }
-        __syncthreads();  // fit maybe seeds into unused spaces
-        for (unsigned int prop_idx = threadIdx.x; prop_idx < nProps;
-             prop_idx += blockDim.x) {
-
-            char ambiguity = d_seed_ambiguity[prop_idx];
-            if (ambiguity == 0 || ambiguity == -2) {
-                continue;  // is not ambiguous
-            }
-            int2 prop = d_seed_proposals[prop_idx];
-
-            bool isgood = true;
-
-            int2 mini_state;
-            for (int next_mini = prop.y; next_mini >= 0;) {
-                mini_state = d_mini_states[next_mini];
-                next_mini = mini_state.y;
-
-                unsigned long long int best_bid = d_edge_bids[mini_state.x];
-                if (best_bid == 0) {
-                    continue;  // already reset
-                }
-                if (d_seed_ambiguity[best_bid & 0xFFFFFFFFLL] == 0) {
-                    isgood = false;
-                    break;
-                }  // clashes with definate seed
-                d_edge_bids[mini_state.x] =
-                    0;  // reset edge bid from (possibly) fake seed
-            }
-            if (isgood) {
-                d_seed_ambiguity[prop_idx] = 1;
-                atomicAdd(&nStates, 1);
-            }  // flag as maybe seed
-            else
-                d_seed_ambiguity[prop_idx] = -2;  // definate fake
-        }
-        __syncthreads();
-        for (unsigned int prop_idx = threadIdx.x; prop_idx < nProps;
-             prop_idx += blockDim.x) {
-            if (d_seed_ambiguity[prop_idx] != 1) {
-                continue;
-            }
-            int2 prop = d_seed_proposals[prop_idx];
-
-            add_seed_proposal(prop.x, prop.y, prop_idx, d_seed_ambiguity,
-                              d_seed_proposals, d_edge_bids,
-                              d_mini_states);  // reset and re bid
-        }
-        __syncthreads();
-    }
-    __syncthreads();
-    for (unsigned int prop_idx = threadIdx.x; prop_idx < nProps;
-         prop_idx += blockDim.x) {
-        if (d_seed_ambiguity[prop_idx] != 0) {
-            continue;
-        }
-        int2 prop = d_seed_proposals[prop_idx];
-
-        unsigned int seed_idx = atomicAdd(&d_counters[9], 1);
-        if (seed_idx > nMaxSeeds) {
-            break;
-        }
-        // add good seed to output
-        int2 mini_state;
-        int length = 0;
-        for (int next_mini = prop.y; next_mini >= 0; length++) {
-
-            mini_state = d_mini_states[next_mini];
-            next_mini = mini_state.y;
-
-            d_seeds[seed_idx].nodes[length] =
-                d_output_graph[mini_state.x * edge_size +
-                               traccc::device::gbts_consts::node1];
-            d_levels[mini_state.x] = -1;  // remove edge from graph
-        }
-        d_seeds[seed_idx].nodes[length] =
-            d_output_graph[mini_state.x * edge_size +
-                           traccc::device::gbts_consts::node2];
-        d_seeds[seed_idx].size = ++length;
-    }
-    __syncthreads();
 }
 
 void __global__ gbts_seed_conversion_kernel(
