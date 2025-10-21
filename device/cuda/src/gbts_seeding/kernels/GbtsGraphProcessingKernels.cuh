@@ -42,10 +42,6 @@ struct __align__(16) edgeState {
 
     bool m_head_node_type : 1;
 
-    unsigned int m_mini_idx : 27;
-    unsigned int m_length : 5;
-    int m_edge_idx;
-
     // upper triangle of the Cov matrix for the parabola in the x,y plane since
     // symetry gives the rest
     float Cx[5];  //(0,0), (0,1), (0,2), (1,1), (1,2), (2,2)
@@ -134,7 +130,7 @@ __global__ static void CCA_IterationKernel(
 					out_paths += 1 + d_outgoing_paths[nextEdgeIdx].x;
 				}
 				// flag as not terminus edge
-				d_outgoing_paths[edgeIdx].y = -1;
+				d_outgoing_paths[nextEdgeIdx].y = -1;
 			}
 			//flag as long enough segement to become a seed
 			d_outgoing_paths[edgeIdx] = make_short2(out_paths, (next_level >= minLevel) - 1);
@@ -154,7 +150,7 @@ __global__ static void CCA_IterationKernel(
     }
 }
 
-void __global__ count_terminus_edges(int2* d_path_store, short2* d_outgoing_paths, int* d_counters, unsigned int nEdges) {
+void __global__ count_terminus_edges(int2* d_path_store, short2* d_outgoing_paths, unsigned int* d_counters, unsigned int nEdges) {
 		
 	__shared__ int outgoingCount;
 
@@ -164,25 +160,35 @@ void __global__ count_terminus_edges(int2* d_path_store, short2* d_outgoing_path
 	__syncthreads();
 
 	int edge_idx = threadIdx.x + blockIdx.x*blockDim.x;
-	if(edge_idx >= nEdges) {
-		return;
+	if(edge_idx < nEdges) {
+		
+		short2 out_paths = d_outgoing_paths[edge_idx];
+		// only count terminus edges that could lead to a seed
+		if(out_paths.y != -1) {
+			d_outgoing_paths[edge_idx].y = atomicAdd(&d_counters[7], 1);
+			atomicAdd(&outgoingCount, out_paths.x);
+		}
 	}
-	short2 out_edge = d_outgoing_paths[edge_idx];
-	// only count terminus edges that could lead to a seed
-	if(out_edge.y == -1) {
-		return;
-	}
-	// terminus edges link back to nothing (-1)
-	d_path_store[atomicAdd(&d_counters[7], 1)] = make_int2(edge_idx, -1);
-	atomicAdd(&outgoingCount, out_edge.x);
-	
 	__syncthreads();
 	if(threadIdx.x == 0) {
 		atomicAdd(&d_counters[6], outgoingCount);
 	}
 }
 
-void __global__ fill_state_store(int2* d_path_store, int* d_output_graph, char* d_levels, unsigned int* d_counters , unsigned int nTerminus, unsigned int max_num_neighbours) {
+void __global__ add_terminus_to_path_store(int2* d_path_store, short2* d_outgoing_paths, unsigned int* d_counters, int nEdges) {
+	
+	int edge_idx = threadIdx.x + blockIdx.x*blockDim.x;
+	if(edge_idx >= nEdges) {
+		return;
+	}
+	short2 out_paths = d_outgoing_paths[edge_idx];
+	if(out_paths.y == -1) {
+		return;
+	}
+	d_path_store[out_paths.y] = make_int2(edge_idx, -1);
+}
+
+void __global__ fill_path_store(int2* d_path_store, int* d_output_graph, char* d_levels, unsigned int* d_counters , unsigned int nTerminus, unsigned int max_num_neighbours) {
 	
 	__shared__ int2 live_paths[traccc::device::gbts_consts::live_path_buffer];
 	__shared__ int n_live_paths;
@@ -209,8 +215,9 @@ void __global__ fill_state_store(int2* d_path_store, int* d_output_graph, char* 
 			}
 			int live_idx = atomicAdd(&n_live_paths, 1);
 			if(live_idx >= traccc::device::gbts_consts::live_path_buffer) {
+				printf("hi");
 				break;
-			} 
+			}
 			// head edge idx, link back
 			live_paths[live_idx] = make_int2(edge_idx, path_idx);	
 		}
@@ -222,6 +229,9 @@ void __global__ fill_state_store(int2* d_path_store, int* d_output_graph, char* 
 	
 	while(n_live_paths > 0) {
 		has_path = false;
+		if(threadIdx.x == 0) {
+			n_live_paths = min(n_live_paths, traccc::device::gbts_consts::live_path_buffer);
+		}
 		// get path
 		if(threadIdx.x < n_live_paths) {
 			path = live_paths[n_live_paths - threadIdx.x -1];
@@ -229,7 +239,6 @@ void __global__ fill_state_store(int2* d_path_store, int* d_output_graph, char* 
 		}
 		__syncthreads();
 		if(threadIdx.x == 0) {
-			n_live_paths = min(n_live_paths, traccc::device::gbts_consts::live_path_buffer);
 			n_live_paths = n_live_paths < blockDim.x ? 0 : n_live_paths - blockDim.x;
 		}
 		__syncthreads();
@@ -245,9 +254,10 @@ void __global__ fill_state_store(int2* d_path_store, int* d_output_graph, char* 
 				int live_idx = atomicAdd(&n_live_paths, 1);
 				if(live_idx >= traccc::device::gbts_consts::live_path_buffer) {
 					break;
-				}	
+				}
 				path_idx = atomicAdd(&d_counters[7], 1);
 				// head edge idx, link back
+				if(edge_idx == -1) printf("how");
 				d_path_store[path_idx] = make_int2(edge_idx, path.y); 
 				live_paths[live_idx] = make_int2(edge_idx, path_idx);	
 			}
@@ -266,7 +276,6 @@ __device__ inline void edgeState::initialize(
     const float4& node1_params, const float4& node2_params) {  // x, y, z,type
 
     m_J = 0;
-    m_length = 1;
     m_head_node_type = (node1_params.w < 0);
     // n2->n1
 
@@ -328,42 +337,43 @@ inline __device__ bool update(
     edgeState* new_ts, const edgeState* ts,
     const float4& node1_params) {  // params are x, y, z, type
 
-    const float sigma_t = 0.0003f;
-    const float sigma_w = .00009f;
+	//for 900 MeV track at eta=0
+	const float sigmaMS = 0.016; 
+	// 2.5% per layer
+	const float radLen  = 0.025; 
 
-    const float sigmaMS = 0.016f;
-
-    const float sigma_x = 0.25f;  // was 0.22
-    const float sigma_y = 2.5f;   // was 1.7
+    const float sigma_x = 0.08f; 
+    const float sigma_y = 0.25f;
 
     const float weight_x = 0.5f;
     const float weight_y = 0.5f;
 
-    const float maxDChi2_x = 60.0f;  // was 35.0;
-    const float maxDChi2_y = 60.0f;  // was 31.0;
+    const float maxDChi2_x = 5; 
+    const float maxDChi2_y = 6; 
 
     const float add_hit = 14.0f;
     // m_J is stored in 30 + sign bits so max qual = INT_MAX/2 =
     // add_hit*max_length*qual_scale
     const float qual_scale =
         0.5 * static_cast<float>(INT_MAX) /
-            static_cast<float>(add_hit *
-                               traccc::device::gbts_consts::max_cca_iter) -
-        1;
+        static_cast<float>(add_hit *
+        traccc::device::gbts_consts::max_cca_iter) - 1;
+ 
+	const float max_curvature = 1e-3f;
+	const float max_z0  = 170.0;
+ 
+	float tau2 = ts->m_Y[1]*ts->m_Y[1];
+	float invSin2 = 1 + tau2;
+    
+	float lenCorr = (node1_params.w != -1) == 0 ? invSin2 : invSin2/tau2;
+	float minPtFrac = fabsf(ts->m_X[2]) / max_curvature;
+	
+	float corrMS = sigmaMS*minPtFrac;
+	float sigma2 = radLen*lenCorr*corrMS*corrMS;// /invSin2;
 
     // add ms.
-    float m_Cx22 = ts->m_Cx(2, 2) + sigma_w * sigma_w;
-    float m_Cx11 = ts->m_Cx(1, 1) + sigma_t * sigma_t;
-
-    float t2 = node1_params.w != -1 ? 1 + ts->m_Y[1] * ts->m_Y[1]
-                                    : 1 + 1 / (ts->m_Y[1] * ts->m_Y[1]);
-
-    float s1 = sigmaMS * t2;
-    float s2 = s1 * s1;
-
-    s2 *= sqrtf(t2);
-
-    float m_Cy11 = ts->m_Cy(1, 1) + s2;
+    float m_Cx11 = ts->m_Cx(1, 1) + sigma2;
+    float m_Cy11 = ts->m_Cy(1, 1) + sigma2;
 
     // extrapolation
 
@@ -389,18 +399,18 @@ inline __device__ bool update(
 
     new_ts->m_Cx(0, 0) = ts->m_Cx(0, 0) + 2 * ts->m_Cx(0, 1) * A +
                          2 * ts->m_Cx(0, 2) * B + A * m_Cx11 * A +
-                         2 * A * ts->m_Cx(1, 2) * B + B * m_Cx22 * B;
+                         2 * A * ts->m_Cx(1, 2) * B + B * ts->m_Cx(2, 2) * B;
 
     new_ts->m_Cx(0, 1) = ts->m_Cx(0, 1) + m_Cx11 * A + ts->m_Cx(1, 2) * B +
                          ts->m_Cx(0, 2) * A + A * A * ts->m_Cx(1, 2) +
-                         A * m_Cx22 * B;
+                         A * ts->m_Cx(2, 2) * B;
 
-    new_ts->m_Cx(0, 2) = ts->m_Cx(0, 2) + ts->m_Cx(1, 2) * A + m_Cx22 * B;
+    new_ts->m_Cx(0, 2) = ts->m_Cx(0, 2) + ts->m_Cx(1, 2) * A + ts->m_Cx(2, 2) * B;
 
-    new_ts->m_Cx(1, 1) = m_Cx11 + 2 * A * ts->m_Cx(1, 2) + A * m_Cx22 * A;
-    new_ts->m_Cx(1, 2) = ts->m_Cx(1, 2) + m_Cx22 * A;
+    new_ts->m_Cx(1, 1) = m_Cx11 + 2 * A * ts->m_Cx(1, 2) + A * ts->m_Cx(2, 2) * A;
+    new_ts->m_Cx(1, 2) = ts->m_Cx(1, 2) + ts->m_Cx(2, 2) * A;
 
-    new_ts->m_Cx(2, 2) = m_Cx22;
+    new_ts->m_Cx(2, 2) = ts->m_Cx(2, 2);
 
     new_ts->m_Y[0] = ts->m_Y[0] + ts->m_Y[1] * dr;
     new_ts->m_Y[1] = ts->m_Y[1];
@@ -442,14 +452,20 @@ inline __device__ bool update(
         static_cast<int>((add_hit - dchi2_x * weight_x - dchi2_y * weight_y) *
                          qual_scale);
 
-    new_ts->m_length = ts->m_length + 1;
-
     for (int i = 0; i < 3; i++) {
         new_ts->m_X[i] += Dx * new_ts->m_Cx(0, i) * resid_x;
     }
-    for (int i = 0; i < 2; i++) {
+	//if(fabsf(new_ts->m_X[2]) > max_curvature) {
+	//	return false;
+	//}
+	for (int i = 0; i < 2; i++) {
         new_ts->m_Y[i] += Dx * new_ts->m_Cy(0, i) * resid_y;
     }
+	float z0 = ts->m_Y[0] - new_ts->m_refY*ts->m_Y[1];
+	//if(fabsf(z0) > max_z0) {
+	//	return false;
+	//}
+
     new_ts->m_Cx(2, 2) -= Dx * new_ts->m_Cx(0, 2) * new_ts->m_Cx(0, 2);
     new_ts->m_Cx(1, 2) -= Dx * new_ts->m_Cx(0, 1) * new_ts->m_Cx(0, 2);
     new_ts->m_Cx(1, 1) -= Dx * new_ts->m_Cx(0, 1) * new_ts->m_Cx(0, 1);
@@ -486,36 +502,109 @@ inline __device__ bool update(
  *  @param[out] d_seed_ambiguity here is 0 if the seed is the highest quality
  * seed using all of its edges and -1 otherwise
  */
-inline __device__ void add_seed_proposal(const int m_J, const int mini_idx,
+inline __device__ void add_seed_proposal(const int m_J, const int path_idx,
                                          const unsigned int prop_idx,
                                          char* d_seed_ambiguity,
                                          int2* d_seed_proposals,
                                          unsigned long long int* d_edge_bids,
-                                         const int2* d_mini_states) {
+                                         const int2* d_path_store) {
 
     // new seed bids for its edges
-    d_seed_proposals[prop_idx] = make_int2(m_J, mini_idx);
+    d_seed_proposals[prop_idx] = make_int2(m_J, path_idx);
     d_seed_ambiguity[prop_idx] = 0;
     __threadfence();  // ensure above proposal info is written before biding
 
     unsigned long long int seed_bid =
         (static_cast<unsigned long long int>(m_J) << 32) |
         (static_cast<unsigned long long int>(prop_idx));
-
-    int2 mini_state;
-    for (int next_mini = mini_idx; next_mini >= 0;) {
-        mini_state = d_mini_states[next_mini];
+	
+	int2 path = d_path_store[path_idx];
+	while(path.y >= 0) {
+        int edge_idx = path.x;
+		path = d_path_store[path.y];
 
         unsigned long long int competing_offer =
-            atomicMax(&d_edge_bids[mini_state.x], seed_bid);
+            atomicMax(&d_edge_bids[edge_idx], seed_bid);
         if (competing_offer > seed_bid) {
             d_seed_ambiguity[prop_idx] = -1;
         } else if (competing_offer != 0) {
             d_seed_ambiguity[competing_offer & 0xFFFFFFFFLL] = -1;
         }  // default bids are 0 so no need to replace
-
-        next_mini = mini_state.y;
     }
+}
+
+void __global__ fit_segments(float4* d_sp_params, int* d_output_graph, int2* d_path_store,
+	int2* d_seed_proposals, unsigned long long int* d_edge_bids, char* d_seed_ambiguity,
+	unsigned int* d_counters, int nPaths, int nTerminusEdges, int minLevel, unsigned int max_num_neighbours) {
+	
+	int path_idx = threadIdx.x + blockIdx.x*blockDim.x + nTerminusEdges;
+	if(path_idx >= d_counters[7]) {
+		return;	
+	}
+	int edge_size = 2 + 1 + max_num_neighbours;	
+
+	char length = 1;
+	char toggle = 0;
+	edgeState states[2];
+	
+	int2 path = d_path_store[path_idx];
+	
+	int nodeidx = d_output_graph[traccc::device::gbts_consts::node1 + edge_size*path.x];
+	float4 node1 = d_sp_params[nodeidx];
+	nodeidx = d_output_graph[traccc::device::gbts_consts::node2 + edge_size*path.x];
+	float4 node2 = d_sp_params[nodeidx];
+	
+	states[toggle].initialize(node2, node1);
+
+	path = d_path_store[path.y];
+	while(path.y >= 0) {
+
+		toggle = 1 - toggle;
+		node1 = d_sp_params[d_output_graph[traccc::device::gbts_consts::node2 + edge_size*path.x]];
+		if(!update(&states[toggle], &states[1-toggle], node1)) {
+			break;
+		}
+		++length;
+		path = d_path_store[path.y];
+	}
+	if(length < minLevel) {
+		return;
+	}
+	add_seed_proposal(states[toggle].m_J, path_idx, atomicAdd(&d_counters[8], 1),
+		d_seed_ambiguity, d_seed_proposals, d_edge_bids, d_path_store);
+
+}
+
+void __global__ reset_edge_bids(int2* d_path_store, int2* d_seed_proposals, unsigned long long* d_edge_bids, char* d_seed_ambiguity, unsigned int* d_counters) {
+	
+	int nProps = d_counters[8];
+	for(int prop_idx = threadIdx.x + blockIdx.x*blockDim.x; prop_idx < nProps; prop_idx += blockDim.x*gridDim.x) {
+		int2 prop = d_seed_proposals[prop_idx];
+		    
+		bool isgood = true;
+
+		int2 path = d_path_store[prop.y];
+		while(path.y > 0) {
+			int edge_idx = path.x;
+			path = d_path_store[path.y];
+		
+			unsigned long long int best_bid = d_edge_bids[edge_idx];
+			if (best_bid == 0) {
+				continue;  // already reset
+			}
+			if (d_seed_ambiguity[best_bid & 0xFFFFFFFFLL] == 0) {
+				isgood = false;
+				break;
+			}  // clashes with definate seed
+			d_edge_bids[edge_idx] =
+				0;  // reset edge bid from (possibly) fake seed
+		}
+		if (isgood) {
+			d_seed_ambiguity[prop_idx] = 1;
+		}  // flag as maybe seed
+		else
+			d_seed_ambiguity[prop_idx] = -2;  // definate fake	
+	}
 }
 
 void __global__ gbts_seed_conversion_kernel(

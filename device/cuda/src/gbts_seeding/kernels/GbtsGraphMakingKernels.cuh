@@ -221,10 +221,10 @@ __global__ static void graphEdgeMakingKernel(
             unsigned int nEdges = atomicAdd(&d_counters[0], 1);
             if (nEdges < nMaxEdges) {
                 __half exp_eta = __float2half(sqrtf(1 + tau * tau) - tau);
-                atomicAdd(&d_num_outgoing_edges[globalIdx2], 1);
+                atomicAdd(&d_num_outgoing_edges[begin_bin1 + n1Idx], 1);
 
                 d_edge_nodes[nEdges] =
-                    make_int2(begin_bin1 + n1Idx, globalIdx2);
+                    make_int2(globalIdx2, begin_bin1 + n1Idx);
 
                 d_edge_params[nEdges] = make_half4(
                     exp_eta, __float2half(curv), __float2half(phi1 + curv * r1),

@@ -100,18 +100,14 @@ struct gbts_ctx {
 
     // seed-extraction walkthrough
 
-    // edge_idx and prev mini_state forms a seeds uniuqe path through the graph
-    int2* d_mini_states{};
+    // edge_idx and prev path_store idx forms a uniuqe path through the graph
+    int2* d_path_store{};
     int2* d_seed_proposals{};  // int quality and final mini_state_idx
-    kernels::edgeState* d_state_store{};  // global overflow of live edgeStates
     // first 32 bits are seed quality second 32 bits are seed_proposals index
     unsigned long long int* d_edge_bids{};
     // 0 as default/is real seed, 1 as maybe seed,
     //-1 as maybe fake seed, -2 as fake
     char* d_seed_ambiguity{};
-
-    // output
-    kernels::Tracklet* d_seeds{};
 };
 
 gbts_seeding_algorithm::gbts_seeding_algorithm(
@@ -140,8 +136,8 @@ gbts_seeding_algorithm::output_type gbts_seeding_algorithm::operator()(
     ctx.nSp = m_copy.get().get_size(spacepoints);
     if (ctx.nSp == 0)
         return {0, m_mr.main};
-
-    unsigned int nThreads = 128;
+    
+	unsigned int nThreads = 128;
     unsigned int nBlocks = 1 + (ctx.nSp - 1) / nThreads;
 
     cudaMalloc(&ctx.d_layerCounts, (m_config.nLayers + 1) * sizeof(int));
@@ -719,9 +715,7 @@ gbts_seeding_algorithm::output_type gbts_seeding_algorithm::operator()(
     //  for a seed originating at the edge
     cudaMemset(ctx.d_levels, 0x1, data_size);
 
-    data_size = ctx.nConnectedEdges * sizeof(int);
-
-    cudaMalloc(&ctx.d_outgoing_paths, data_size);
+    cudaMalloc(&ctx.d_outgoing_paths, ctx.nConnectedEdges * sizeof(short2));
 
     unsigned int nEdgesLeft = ctx.nConnectedEdges;
 
@@ -757,12 +751,51 @@ gbts_seeding_algorithm::output_type gbts_seeding_algorithm::operator()(
         return {0, m_mr.main};
     }
 
+	nThreads = 128;
+	nBlocks  = 1 + (ctx.nConnectedEdges - 1)/nThreads;
+    
+	cudaStreamSynchronize(stream);
+
+	kernels::count_terminus_edges<<<nBlocks, nThreads, 0, stream>>>(ctx.d_path_store, ctx.d_outgoing_paths, ctx.d_counters, ctx.nConnectedEdges);
+    
+	cudaStreamSynchronize(stream);
+	
+	// nPaths to terminus, nTerminusEdges
+	int path_sizes[2];
+	cudaMemcpyAsync(&path_sizes, &ctx.d_counters[6], 2*sizeof(unsigned int) , cudaMemcpyDeviceToHost , stream);
+
+	TRACCC_INFO(path_sizes[0] << "nPath | nTerminus " << path_sizes[1]);
+
+	cudaMalloc(&ctx.d_path_store, (path_sizes[0] + path_sizes[1])*sizeof(int2));
+	cudaMalloc(&ctx.d_seed_proposals, path_sizes[0]*sizeof(int2));
+	cudaMalloc(&ctx.d_seed_ambiguity, path_sizes[0]*sizeof(char));
+	
+	cudaMalloc(&ctx.d_edge_bids, ctx.nConnectedEdges*sizeof(unsigned long long int));
+	
+	kernels::add_terminus_to_path_store<<<nBlocks, nThreads, 0, stream>>>(ctx.d_path_store, ctx.d_outgoing_paths, ctx.d_counters, ctx.nConnectedEdges);
+	
+	nThreads = 512;
+	nBlocks  = 1 + (ctx.nConnectedEdges - 1)/nThreads;
+	
+	kernels::fill_path_store<<<nBlocks, nThreads, 0, stream>>>(ctx.d_path_store, ctx.d_output_graph, ctx.d_levels, ctx.d_counters , path_sizes[1], m_config.max_num_neighbours);
+	
+	nThreads = 128;
+	nBlocks  = 1 + (path_sizes[0] - 1)/nThreads;
+	
+	kernels::fit_segments<<<nBlocks, nThreads, 0, stream>>>(ctx.d_reducedSP, ctx.d_output_graph, ctx.d_path_store,
+	ctx.d_seed_proposals, ctx.d_edge_bids, ctx.d_seed_ambiguity,
+	ctx.d_counters, path_sizes[0], path_sizes[1], m_config.minLevel, m_config.max_num_neighbours);
+	
+	int nProps = 0;
+	cudaMemcpyAsync(&nProps, &ctx.d_counters[8], sizeof(unsigned int) , cudaMemcpyDeviceToHost , stream);
+
+	TRACCC_INFO("nProps " << nProps);
+
     cudaStreamSynchronize(stream);
 
     cudaFree(ctx.d_levels);
     cudaFree(ctx.d_outgoing_paths);
-    cudaFree(ctx.d_state_store);
-    cudaFree(ctx.d_mini_states);
+    cudaFree(ctx.d_path_store);
     cudaFree(ctx.d_seed_proposals);
     cudaFree(ctx.d_edge_bids);
     cudaFree(ctx.d_seed_ambiguity);
@@ -771,24 +804,14 @@ gbts_seeding_algorithm::output_type gbts_seeding_algorithm::operator()(
     cudaFree(ctx.d_algo_params);
     cudaFree(ctx.d_reducedSP);
 
-    cudaMemcpyAsync(&ctx.nSeeds, &ctx.d_counters[9], sizeof(unsigned int),
-                    cudaMemcpyDeviceToHost, stream);
-
     // 8. convert to 3sp seeds and make output buffer
-
+	
     edm::seed_collection::buffer output_seeds(
-        ctx.nSeeds, m_mr.main, vecmem::data::buffer_type::resizable);
+        nProps, m_mr.main, vecmem::data::buffer_type::resizable);
     m_copy.get().setup(output_seeds)->ignore();
-
-    nThreads = 128;
-    nBlocks = 1 + (ctx.nSeeds - 1) / nThreads;
-
-    kernels::gbts_seed_conversion_kernel<<<nBlocks, nThreads, 0, stream>>>(
-        ctx.d_seeds, output_seeds, ctx.nSeeds);
-
+	
     cudaStreamSynchronize(stream);
 
-    cudaFree(ctx.d_seeds);
     cudaFree(ctx.d_counters);
 
     error = cudaGetLastError();
