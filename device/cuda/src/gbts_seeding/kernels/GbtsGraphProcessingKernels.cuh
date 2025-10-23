@@ -111,12 +111,15 @@ __global__ static void CCA_IterationKernel(
             }
         }
         // add all remianing edges to level_views on the last iteration
-        if (localChange &&
-            iter < traccc::device::gbts_consts::max_cca_iter - 1) {
-            // nChanges
-            unsigned int edgesLeftPlace = atomicAdd(&d_counters[4 - toggle], 1);
-            d_active_edges[edgesLeftPlace] = edgeIdx;  // for the next iteration
-        } else {
+        if (localChange) {
+			if(iter == traccc::device::gbts_consts::max_cca_iter - 1) {
+				//shorten paths longer than max_cca_iter
+				d_outgoing_paths[edgeIdx].y = -1;
+			} else {
+				unsigned int edgesLeftPlace = atomicAdd(&d_counters[4 - toggle], 1);
+				d_active_edges[edgesLeftPlace] = edgeIdx;  // for the next iteration
+			}
+		} else {
 			short out_paths = 0;
 			for(int nIdx = 0; nIdx < nNei; ++nIdx) {
 				int nextEdgeIdx =
@@ -219,7 +222,6 @@ void __global__ fill_path_store(int2* d_path_store, int* d_output_graph, char* d
 			}
 			int live_idx = atomicAdd(&n_live_paths, 1);
 			if(live_idx >= traccc::device::gbts_consts::live_path_buffer) {
-				printf("hi");
 				break;
 			}
 			int new_path_idx = atomicAdd(&d_counters[7], 1);
@@ -260,7 +262,6 @@ void __global__ fill_path_store(int2* d_path_store, int* d_output_graph, char* d
 				}
 				int live_idx = atomicAdd(&n_live_paths, 1);
 				if(live_idx >= traccc::device::gbts_consts::live_path_buffer) {
-					printf("hi");
 					break;
 				}
 				path_idx = atomicAdd(&d_counters[7], 1);
@@ -367,8 +368,8 @@ inline __device__ bool update(
         static_cast<float>(add_hit *
         traccc::device::gbts_consts::max_cca_iter) - 1;
  
-	const float max_curvature = 1e-3f;
-	const float max_z0  = 170.0;
+	const float max_curvature = 1.1e-3f;
+	const float max_z0  = 160.0;
  
 	float tau2 = ts->m_Y[1]*ts->m_Y[1];
 	float invSin2 = 1 + tau2;
@@ -552,8 +553,11 @@ void __global__ fit_segments(float4* d_sp_params, int* d_output_graph, int2* d_p
 	int edge_size = 2 + 1 + max_num_neighbours;	
 
 	char length = 1;
-	char toggle = 0;
-	edgeState states[2];
+	bool toggle = true;
+	// registers can't be indexed for CUDA
+	// so toggle like this insted
+	edgeState state1;
+	edgeState state2;
 	
 	int2 path = d_path_store[path_idx];
 	
@@ -562,23 +566,31 @@ void __global__ fit_segments(float4* d_sp_params, int* d_output_graph, int2* d_p
 	nodeidx = d_output_graph[traccc::device::gbts_consts::node2 + edge_size*path.x];
 	float4 node2 = d_sp_params[nodeidx];
 	
-	states[toggle].initialize(node2, node1);
+	state1.initialize(node2, node1);
 	while(path.y >= 0) {
 		path = d_path_store[path.y];
 
-		toggle = 1 - toggle;
+		toggle = !toggle;
 		node2 = d_sp_params[d_output_graph[traccc::device::gbts_consts::node2 + edge_size*path.x]];
-		if(!update(&states[toggle], &states[1-toggle], node2)) {
+		if(toggle) {
+			if(!update(&state1, &state2, node2)) {
+				break;
+			}
+		} else if(!update(&state2, &state1, node2)) {
 			break;
 		}
 		length++;
 	}
-	// only kepp long enough seeds
+	// only keep long enough seeds
 	if(length < minLevel) {
 		return;
 	}
+	int qual = state2.m_J;
+	if(toggle) {
+		qual = state1.m_J;
+	}
 	// perform first round of bidding for disambiguation
-	add_seed_proposal(states[toggle].m_J, path_idx, atomicAdd(&d_counters[8], 1),
+	add_seed_proposal(qual, path_idx, atomicAdd(&d_counters[8], 1),
 		d_seed_ambiguity, d_seed_proposals, d_edge_bids, d_path_store);
 }
 

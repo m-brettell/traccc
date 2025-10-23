@@ -73,13 +73,13 @@ struct gbts_algo_params {
 
     float min_z0 = -160.0f;
     float max_z0 = 160.0f;
-    float maxOuterRadius = 550.0f;
+    float maxOuterRadius = 350.0f;
     float cut_zMinU = min_z0 - maxOuterRadius * 45;
     float cut_zMaxU = max_z0 + maxOuterRadius * 45;  // how to get ROI dzdr
 
-    float max_Kappa = 3.75e-4f;
+    float max_Kappa = 4.00e-4f;
     float low_Kappa_d0 = 0.02f; 
-    float high_Kappa_d0 = 0.1f; 
+    float high_Kappa_d0 = 0.1f;
 
     // tau prediction cut
     float tMin_slope = 6.7f;

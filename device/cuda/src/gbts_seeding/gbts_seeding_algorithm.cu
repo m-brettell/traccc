@@ -16,6 +16,9 @@
 // C++ include(s)
 #include <ranges>
 
+// test include
+#include <cuda_profiler_api.h>
+
 namespace traccc::cuda {
 
 struct gbts_ctx {
@@ -123,6 +126,8 @@ gbts_seeding_algorithm::output_type gbts_seeding_algorithm::operator()(
     const traccc::edm::spacepoint_collection::const_view& spacepoints,
     const traccc::measurement_collection_types::const_view& measurements)
     const {
+
+	cudaProfilerStart();
 
     gbts_ctx ctx;
 
@@ -557,7 +562,7 @@ gbts_seeding_algorithm::output_type gbts_seeding_algorithm::operator()(
     cudaMemcpyAsync(&ctx.nEdges, ctx.d_counters, sizeof(unsigned int),
                     cudaMemcpyDeviceToHost, stream);
 
-    TRACCC_INFO("Created " << ctx.nEdges << " edges with a cap of "
+    TRACCC_DEBUG("Created " << ctx.nEdges << " edges with a cap of "
                             << ctx.nMaxEdges);
 
     if (ctx.nEdges > ctx.nMaxEdges)
@@ -663,7 +668,7 @@ gbts_seeding_algorithm::output_type gbts_seeding_algorithm::operator()(
     ctx.nConnections = nStats[1];
     ctx.nConnectedEdges = nStats[2];
 
-    TRACCC_INFO("created " << ctx.nConnections << " edge links, found "
+    TRACCC_DEBUG("created " << ctx.nConnections << " edge links, found "
                             << ctx.nConnectedEdges
                             << " connected edges for seed extraction");
     if (ctx.nConnectedEdges == 0)
@@ -764,7 +769,7 @@ gbts_seeding_algorithm::output_type gbts_seeding_algorithm::operator()(
 	int path_sizes[2];
 	cudaMemcpyAsync(&path_sizes, &ctx.d_counters[6], 2*sizeof(unsigned int) , cudaMemcpyDeviceToHost , stream);
 
-	TRACCC_INFO(path_sizes[0] << "nPath | nTerminus " << path_sizes[1]);
+	TRACCC_DEBUG(path_sizes[0] << "nPath | nTerminus " << path_sizes[1]);
 
 	cudaMalloc(&ctx.d_path_store, (path_sizes[0] + path_sizes[1])*sizeof(int2));
 	cudaMalloc(&ctx.d_seed_proposals, path_sizes[0]*sizeof(int2));
@@ -793,7 +798,7 @@ gbts_seeding_algorithm::output_type gbts_seeding_algorithm::operator()(
 	int nProps = 0;
 	cudaMemcpyAsync(&nProps, &ctx.d_counters[8], sizeof(unsigned int) , cudaMemcpyDeviceToHost , stream);
 
-	TRACCC_INFO("nProps " << nProps);
+	TRACCC_DEBUG("nProps " << nProps);
 	
     cudaStreamSynchronize(stream);
 
@@ -807,7 +812,7 @@ gbts_seeding_algorithm::output_type gbts_seeding_algorithm::operator()(
 
 	nThreads = 128;
 	nBlocks  = 1 + (nProps - 1)/nThreads;
-	// do on one block after a few rounds?	
+	
 	for(int round = 0; round < 5; ++round) {	
 		kernels::reset_edge_bids<<<nBlocks, nThreads, 0, stream>>>(
 			ctx.d_path_store, ctx.d_seed_proposals, 
@@ -850,6 +855,9 @@ gbts_seeding_algorithm::output_type gbts_seeding_algorithm::operator()(
                      << cudaGetErrorString(error));
         return {0, m_mr.main};
     }
+	
+	cudaStreamSynchronize(stream);
+	cudaProfilerStop();
 
     TRACCC_DEBUG("GBTS found " << ctx.nSeeds << " seeds");
     return output_seeds;
