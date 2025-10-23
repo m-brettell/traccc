@@ -16,8 +16,7 @@
 
 namespace traccc::cuda::kernels {
 
-// currently 80 bytes -> 5 v4 loads/stores
-struct __align__(16) edgeState {
+struct edgeState {
 
     __device__ inline void initialize(const float4& node1_params,
                                       const float4& node2_params);
@@ -57,15 +56,14 @@ struct Tracklet {
 /** @brief Performs one iteration of the CCA over the graph to calculate
  * potential seed length
  *
- *  This also constructs a level view over the graph edges for use in seed
- * extraction
+ * also counts the size of d_path_store to describe all the paths back
+ * to the inner-most (terminus) edges 
  *
  *  @param[in] d_output_graph see comments in device_context.h
  *  @param[in] d_levels is the maximum seed length originating at each edge
  *  @param[in/out] d_active_edges stores the edge_idx for edges that have not
- * reached their level
- *  @param[out] d_level_views / d_level_boundaires together they construct a
- * view over the edges by level for use in seed extraction
+ *  reached their level
+ *  @param[out] d_outgoing_paths [#paths needed, is-terminus]
  *  @param[internal] d_counters[5 and 6] used for counting the last block and
  * for the number of active edges
  */
@@ -151,7 +149,8 @@ __global__ static void CCA_IterationKernel(
 }
 
 void __global__ count_terminus_edges(int2* d_path_store, short2* d_outgoing_paths, unsigned int* d_counters, unsigned int nEdges) {
-		
+	
+	// count in shared first to reduce global atomics		
 	__shared__ int outgoingCount;
 
 	if(threadIdx.x == 0) {
@@ -164,6 +163,7 @@ void __global__ count_terminus_edges(int2* d_path_store, short2* d_outgoing_path
 		
 		short2 out_paths = d_outgoing_paths[edge_idx];
 		// only count terminus edges that could lead to a seed
+		// fill the first part of path_store so fitting can skip go-nowhere paths
 		if(out_paths.y != -1) {
 			d_outgoing_paths[edge_idx].y = atomicAdd(&d_counters[7], 1);
 			atomicAdd(&outgoingCount, out_paths.x);
@@ -185,9 +185,14 @@ void __global__ add_terminus_to_path_store(int2* d_path_store, short2* d_outgoin
 	if(out_paths.y == -1) {
 		return;
 	}
+	// -1 flags as the terminus of a path
 	d_path_store[out_paths.y] = make_int2(edge_idx, -1);
 }
 
+// each node in the path_store defines a unique path through the graph
+// but includes subsets like 0->1->2 and 1->2
+// The paths order the edges in reverse order compared to graph linking 
+// extracting all paths here allows for fitting to occor down know paths in registers
 void __global__ fill_path_store(int2* d_path_store, int* d_output_graph, char* d_levels, unsigned int* d_counters , unsigned int nTerminus, unsigned int max_num_neighbours) {
 	
 	__shared__ int2 live_paths[traccc::device::gbts_consts::live_path_buffer];
@@ -200,16 +205,15 @@ void __global__ fill_path_store(int2* d_path_store, int* d_output_graph, char* d
 
 	int edge_size = 2 + 1 + max_num_neighbours;
 
-	int path_idx = threadIdx.x + blockIdx.x*blockDim.x;
-	// populate live_paths with terminus
-	if(path_idx < nTerminus) {
+	int path_idx = threadIdx.x + blockIdx.x*16;
+	// populate live_paths with terminus to start exploration from
+	if(threadIdx.x < 16 && path_idx < nTerminus) {
 		int2 path = d_path_store[path_idx];
-		
 		int nNei = d_output_graph[traccc::device::gbts_consts::nNei + edge_size*path.x];
 		char level = d_levels[path.x];
 		for(int nei = 0; nei < nNei; ++nei) {
 			int edge_idx = d_output_graph[traccc::device::gbts_consts::nei_start + nei + edge_size*path.x];
-			// only search down longest segments
+			// only search down longest path
 			if(level != d_levels[edge_idx] + 1) {
 				continue;
 			}
@@ -218,8 +222,10 @@ void __global__ fill_path_store(int2* d_path_store, int* d_output_graph, char* d
 				printf("hi");
 				break;
 			}
+			int new_path_idx = atomicAdd(&d_counters[7], 1);
 			// head edge idx, link back
-			live_paths[live_idx] = make_int2(edge_idx, path_idx);	
+			d_path_store[new_path_idx] = make_int2(edge_idx, path_idx); 
+			live_paths[live_idx] = make_int2(edge_idx, new_path_idx);	
 		}
 	}
 	__syncthreads();
@@ -232,6 +238,7 @@ void __global__ fill_path_store(int2* d_path_store, int* d_output_graph, char* d
 		if(threadIdx.x == 0) {
 			n_live_paths = min(n_live_paths, traccc::device::gbts_consts::live_path_buffer);
 		}
+		__syncthreads();
 		// get path
 		if(threadIdx.x < n_live_paths) {
 			path = live_paths[n_live_paths - threadIdx.x -1];
@@ -253,15 +260,16 @@ void __global__ fill_path_store(int2* d_path_store, int* d_output_graph, char* d
 				}
 				int live_idx = atomicAdd(&n_live_paths, 1);
 				if(live_idx >= traccc::device::gbts_consts::live_path_buffer) {
+					printf("hi");
 					break;
 				}
 				path_idx = atomicAdd(&d_counters[7], 1);
 				// head edge idx, link back
-				if(edge_idx == -1) printf("how");
 				d_path_store[path_idx] = make_int2(edge_idx, path.y); 
 				live_paths[live_idx] = make_int2(edge_idx, path_idx);	
 			}
 		}
+		// wait for live_paths to repopulate
 		__syncthreads();	
 	}
 }
@@ -270,7 +278,7 @@ void __global__ fill_path_store(int2* d_path_store, int* d_output_graph, char* d
  * edge (2 nodes)
  *
  *  @param[in] node1_params / node2_params the nodes of the starting edge. Node
- * 1 is the inner node and we filter outside in
+ *  1 is the inner node and we filter outside in
  */
 __device__ inline void edgeState::initialize(
     const float4& node1_params, const float4& node2_params) {  // x, y, z,type
@@ -287,8 +295,8 @@ __device__ inline void edgeState::initialize(
                      node1_params.y * node1_params.y);
     float r2 = sqrtf(node2_params.x * node2_params.x +
                      node2_params.y * node2_params.y);
-
-    m_s = dy / L;
+    
+	m_s = dy / L;
     m_c = dx / L;
 
     // transform for extrapolation and update
@@ -328,10 +336,10 @@ __device__ inline void edgeState::initialize(
  *  Seed extraction goes outside in
  *
  *  @param[out] new_ts output edgeState for the updated seed including node1
- *  @param[in] ts input edgeState is const because it will be re used for each
- * of its head edge's connections
+ *  this is also used for register space
+ *  @param[in] ts input edgeState
  *  @param[in] node1_params params of the inner node of the new edge to be added
- * to the seed
+ *  to the seed
  */
 inline __device__ bool update(
     edgeState* new_ts, const edgeState* ts,
@@ -348,8 +356,8 @@ inline __device__ bool update(
     const float weight_x = 0.5f;
     const float weight_y = 0.5f;
 
-    const float maxDChi2_x = 5; 
-    const float maxDChi2_y = 6; 
+    const float maxDChi2_x = 5.0f; 
+    const float maxDChi2_y = 6.0f; 
 
     const float add_hit = 14.0f;
     // m_J is stored in 30 + sign bits so max qual = INT_MAX/2 =
@@ -365,7 +373,7 @@ inline __device__ bool update(
 	float tau2 = ts->m_Y[1]*ts->m_Y[1];
 	float invSin2 = 1 + tau2;
     
-	float lenCorr = (node1_params.w != -1) == 0 ? invSin2 : invSin2/tau2;
+	float lenCorr = (node1_params.w != -1) ? invSin2 : invSin2/tau2;
 	float minPtFrac = fabsf(ts->m_X[2]) / max_curvature;
 	
 	float corrMS = sigmaMS*minPtFrac;
@@ -443,7 +451,7 @@ inline __device__ bool update(
     float dchi2_y = resid_y * resid_y * Dy;
 
     if (dchi2_x > maxDChi2_x || dchi2_y > maxDChi2_y) {
-        return false;
+		return false;
     }
 
     // state update
@@ -455,16 +463,16 @@ inline __device__ bool update(
     for (int i = 0; i < 3; i++) {
         new_ts->m_X[i] += Dx * new_ts->m_Cx(0, i) * resid_x;
     }
-	//if(fabsf(new_ts->m_X[2]) > max_curvature) {
-	//	return false;
-	//}
+	if(fabsf(new_ts->m_X[2]) < max_curvature) {
+		return false;
+	}
 	for (int i = 0; i < 2; i++) {
         new_ts->m_Y[i] += Dx * new_ts->m_Cy(0, i) * resid_y;
     }
-	float z0 = ts->m_Y[0] - new_ts->m_refY*ts->m_Y[1];
-	//if(fabsf(z0) > max_z0) {
-	//	return false;
-	//}
+	float z0 = new_ts->m_Y[0] - new_ts->m_refY*ts->m_Y[1];
+	if(fabsf(z0) > max_z0) {
+		return false;
+	}
 
     new_ts->m_Cx(2, 2) -= Dx * new_ts->m_Cx(0, 2) * new_ts->m_Cx(0, 2);
     new_ts->m_Cx(1, 2) -= Dx * new_ts->m_Cx(0, 1) * new_ts->m_Cx(0, 2);
@@ -488,19 +496,18 @@ inline __device__ bool update(
  * seed quality
  *
  *  @param[in] m_J is the quality metric output by the Kalman filter
- *  @param[in] mini_idx the index of final mini_state, backtracking from this
- * gives the seeds path (edges->nodes)
- *  @param[in] d_mini_states stores the path each seed took through the graph in
- * reverse order
+ *  @param[in] path_idx the index of inital path for this seed
+ *  @param[in] d_path_store stores the path each seed took through the graph in
+ *  reverse order
  *  @param[in] prop_idx the index of this new seeds proposition in
- * d_seed_proposals
+ *  d_seed_proposals
  *  @param[in/out] d_edge_bids is [int_m_J, prop_idx] so that atomicMax will
- * swap it out with higher quality bids. The index is then used to flag the
- * replaced seed as maybe fake
+ *  swap it out with higher quality bids. The index is then used to flag the
+ *  replaced seed as maybe fake
  *  @param[out] d_seed_proposals stores the information needed to construct an
- * output Tracklet for this seed
+ *  output Tracklet for this seed
  *  @param[out] d_seed_ambiguity here is 0 if the seed is the highest quality
- * seed using all of its edges and -1 otherwise
+ *  seed using all of its edges and -1 otherwise
  */
 inline __device__ void add_seed_proposal(const int m_J, const int path_idx,
                                          const unsigned int prop_idx,
@@ -518,13 +525,13 @@ inline __device__ void add_seed_proposal(const int m_J, const int path_idx,
         (static_cast<unsigned long long int>(m_J) << 32) |
         (static_cast<unsigned long long int>(prop_idx));
 	
-	int2 path = d_path_store[path_idx];
+	//dummy path to start the loop
+	int2 path = make_int2(0,d_seed_proposals[prop_idx].y);
 	while(path.y >= 0) {
-        int edge_idx = path.x;
 		path = d_path_store[path.y];
 
         unsigned long long int competing_offer =
-            atomicMax(&d_edge_bids[edge_idx], seed_bid);
+            atomicMax(&d_edge_bids[path.x], seed_bid);
         if (competing_offer > seed_bid) {
             d_seed_ambiguity[prop_idx] = -1;
         } else if (competing_offer != 0) {
@@ -537,6 +544,7 @@ void __global__ fit_segments(float4* d_sp_params, int* d_output_graph, int2* d_p
 	int2* d_seed_proposals, unsigned long long int* d_edge_bids, char* d_seed_ambiguity,
 	unsigned int* d_counters, int nPaths, int nTerminusEdges, int minLevel, unsigned int max_num_neighbours) {
 	
+	// take an extracted path and fit it to produce a quality score
 	int path_idx = threadIdx.x + blockIdx.x*blockDim.x + nTerminusEdges;
 	if(path_idx >= d_counters[7]) {
 		return;	
@@ -555,40 +563,44 @@ void __global__ fit_segments(float4* d_sp_params, int* d_output_graph, int2* d_p
 	float4 node2 = d_sp_params[nodeidx];
 	
 	states[toggle].initialize(node2, node1);
-
-	path = d_path_store[path.y];
 	while(path.y >= 0) {
+		path = d_path_store[path.y];
 
 		toggle = 1 - toggle;
-		node1 = d_sp_params[d_output_graph[traccc::device::gbts_consts::node2 + edge_size*path.x]];
-		if(!update(&states[toggle], &states[1-toggle], node1)) {
+		node2 = d_sp_params[d_output_graph[traccc::device::gbts_consts::node2 + edge_size*path.x]];
+		if(!update(&states[toggle], &states[1-toggle], node2)) {
 			break;
 		}
-		++length;
-		path = d_path_store[path.y];
+		length++;
 	}
+	// only kepp long enough seeds
 	if(length < minLevel) {
 		return;
 	}
+	// perform first round of bidding for disambiguation
 	add_seed_proposal(states[toggle].m_J, path_idx, atomicAdd(&d_counters[8], 1),
 		d_seed_ambiguity, d_seed_proposals, d_edge_bids, d_path_store);
-
 }
 
-void __global__ reset_edge_bids(int2* d_path_store, int2* d_seed_proposals, unsigned long long* d_edge_bids, char* d_seed_ambiguity, unsigned int* d_counters) {
+void __global__ reset_edge_bids(int2* d_path_store, int2* d_seed_proposals, unsigned long long int* d_edge_bids, char* d_seed_ambiguity, unsigned int* d_counters) {
 	
 	int nProps = d_counters[8];
 	for(int prop_idx = threadIdx.x + blockIdx.x*blockDim.x; prop_idx < nProps; prop_idx += blockDim.x*gridDim.x) {
+		
+		char ambi = d_seed_ambiguity[prop_idx];
+		if(ambi ==  -2 | ambi == 0) {
+			//only reset maybes
+			continue;
+		}
 		int2 prop = d_seed_proposals[prop_idx];
 		    
 		bool isgood = true;
-
-		int2 path = d_path_store[prop.y];
-		while(path.y > 0) {
-			int edge_idx = path.x;
+		// dummy path to start the loop
+		int2 path = make_int2(0, prop.y);
+		while(path.y >= 0) {
 			path = d_path_store[path.y];
 		
-			unsigned long long int best_bid = d_edge_bids[edge_idx];
+			unsigned long long int best_bid = d_edge_bids[path.x];
 			if (best_bid == 0) {
 				continue;  // already reset
 			}
@@ -596,29 +608,64 @@ void __global__ reset_edge_bids(int2* d_path_store, int2* d_seed_proposals, unsi
 				isgood = false;
 				break;
 			}  // clashes with definate seed
-			d_edge_bids[edge_idx] =
-				0;  // reset edge bid from (possibly) fake seed
+			// reset edge bid from (possibly) fake seed
+			d_edge_bids[path.x] = 0;
 		}
 		if (isgood) {
 			d_seed_ambiguity[prop_idx] = 1;
 		}  // flag as maybe seed
-		else
-			d_seed_ambiguity[prop_idx] = -2;  // definate fake	
+		else {
+			d_seed_ambiguity[prop_idx] = -2;
+			// definate fake	
+		}
+	}
+}
+
+// TO-DO?: reset prop count each iter and make new props like CCA active_edges
+void __global__ seeds_rebid_for_edges(int2* d_path_store, int2* d_seed_proposals, unsigned long long int* d_edge_bids, char* d_seed_ambiguity, unsigned int nProps) {
+	for(int prop_idx = threadIdx.x + blockIdx.x*blockDim.x; prop_idx < nProps; prop_idx += blockDim.x*gridDim.x) {
+		
+		char ambi = d_seed_ambiguity[prop_idx];
+		if(ambi ==  -2 | ambi == 0) {
+			//only rebid for maybes
+			continue;
+		}
+		int2 prop = d_seed_proposals[prop_idx];
+		
+		add_seed_proposal(prop.x, prop.y, prop_idx,
+			d_seed_ambiguity, d_seed_proposals, d_edge_bids, d_path_store);
 	}
 }
 
 void __global__ gbts_seed_conversion_kernel(
-    Tracklet* d_seeds, edm::seed_collection::view output_seeds,
-    const unsigned int nSeeds) {
+    int2* d_seed_proposals, char* d_seed_ambiguity, int2* d_path_store,
+	int* d_output_graph,
+	edm::seed_collection::view output_seeds,
+    const unsigned int nProps, const unsigned int max_num_neighbours) {
+
+	int edge_size = 2 + 1 + max_num_neighbours;
 
     edm::seed_collection::device seeds_device(output_seeds);
-    for (int tracklet = threadIdx.x + blockIdx.x * blockDim.x;
-         tracklet < nSeeds; tracklet += blockDim.x * gridDim.x) {
-        int length = d_seeds[tracklet].size;
-        // sample begining, middle, end sp from tracklet for now
-        seeds_device.push_back({d_seeds[tracklet].nodes[0],
-                                d_seeds[tracklet].nodes[length / 2],
-                                d_seeds[tracklet].nodes[length - 1]});
+    for (int prop_idx = threadIdx.x + blockIdx.x * blockDim.x;
+         prop_idx < nProps; prop_idx += blockDim.x * gridDim.x) {
+		
+		if(d_seed_ambiguity[prop_idx] == -2) {
+			// drop seeds that lost the bidding
+			continue;
+		}
+		Tracklet seed;
+		seed.size = 0;
+		//dummy path to start the loop
+		int2 path = make_int2(0,d_seed_proposals[prop_idx].y);
+		while(path.y >= 0) {
+			path = d_path_store[path.y];
+			seed.nodes[seed.size++] = d_output_graph[traccc::device::gbts_consts::node1 + edge_size*path.x];
+		}
+		seed.nodes[seed.size++] = d_output_graph[traccc::device::gbts_consts::node2 + edge_size*path.x];
+		// sample begining, middle, end sp from tracklet for now
+        seeds_device.push_back({seed.nodes[seed.size - 1],
+			seed.nodes[seed.size / 2],
+			seed.nodes[0]});
     }
 }
 

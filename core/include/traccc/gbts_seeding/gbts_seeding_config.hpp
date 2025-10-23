@@ -48,7 +48,7 @@ struct gbts_consts {
     static constexpr unsigned short max_cca_iter = 15;
     // shared memory allocation sizes
     static constexpr unsigned short node_buffer_length = 128;
-    static constexpr unsigned short live_path_buffer = 2048;
+    static constexpr unsigned short live_path_buffer = 1048;
 
     // access into output graph
     static constexpr char node1 = 0;
@@ -78,8 +78,8 @@ struct gbts_algo_params {
     float cut_zMaxU = max_z0 + maxOuterRadius * 45;  // how to get ROI dzdr
 
     float max_Kappa = 3.75e-4f;
-    float low_Kappa_d0 = 0.0f;   // used to be 0.2f
-    float high_Kappa_d0 = 0.0f;  // used to be 1.0f
+    float low_Kappa_d0 = 0.02f; 
+    float high_Kappa_d0 = 0.1f; 
 
     // tau prediction cut
     float tMin_slope = 6.7f;
@@ -118,7 +118,7 @@ struct gbts_seedfinder_config {
     unsigned int n_eta_bins = 0;  // calculated from input layerInfo
     unsigned int n_phi_bins = 128;
     // graph making maxiums
-    unsigned char max_num_neighbours = 10;
+    unsigned char max_num_neighbours = 6;
     // graph extraction cuts
     int minLevel = 3;  // equivlent to a cut of #seed edges or #spacepoints-1
 };

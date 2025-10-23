@@ -221,15 +221,17 @@ __global__ static void graphEdgeMakingKernel(
             unsigned int nEdges = atomicAdd(&d_counters[0], 1);
             if (nEdges < nMaxEdges) {
                 __half exp_eta = __float2half(sqrtf(1 + tau * tau) - tau);
-                atomicAdd(&d_num_outgoing_edges[begin_bin1 + n1Idx], 1);
+                //edge linking order is inside->out
+				atomicAdd(&d_num_outgoing_edges[begin_bin1 + n1Idx], 1);
 
                 d_edge_nodes[nEdges] =
                     make_int2(globalIdx2, begin_bin1 + n1Idx);
-
-                d_edge_params[nEdges] = make_half4(
-                    exp_eta, __float2half(curv), __float2half(phi1 + curv * r1),
-                    __float2half(phi2 + curv * r2));
-            }
+				
+				d_edge_params[nEdges] = make_half4(
+                    exp_eta, __float2half(curv), __float2half(phi2 + curv * r2),
+                    __float2half(phi1 + curv * r1));
+				
+			}
         }
     }
 }
@@ -244,14 +246,13 @@ __global__ static void graphEdgeLinkingKernel(const int2* d_edge_nodes,
     if (edge_idx >= nEdges) {
         return;
     }
-    int n2Idx = d_edge_nodes[edge_idx].y;  // global index of n2
+    int sharedNode = d_edge_nodes[edge_idx].y;
 
     // this converts num_outgoing_edges to the start postion for each node in
     // d_edge_links
-    int pos = atomicSub(&d_num_outgoing_edges[n2Idx], 1);
-    // this edge starts from n2, matching will check edge's n1 and then loop
-    // over edges outgoing from that node
-    d_edge_links[pos - 1] = edge_idx;
+    int pos = atomicSub(&d_num_outgoing_edges[sharedNode], 1);
+    // provides views of edges leaving the sharedNode for linking
+	d_edge_links[pos - 1] = edge_idx;
 }
 
 __global__ static void graphEdgeMatchingKernel(
@@ -282,12 +283,12 @@ __global__ static void graphEdgeMatchingKernel(
     if (edge1_idx >= nEdges) {
         return;
     }
-    // global index of n1 node of the edge1
-    int n1Idx = d_edge_nodes[edge1_idx].x;
+	
+    int sharedNode = d_edge_nodes[edge1_idx].x;
 
-    int link_begin = d_num_outgoing_edges[n1Idx];
-    // the number of edges which has n1 as their starting node (n2)
-    int nLinks = d_num_outgoing_edges[n1Idx + 1] - link_begin;
+    int link_begin = d_num_outgoing_edges[sharedNode];
+    // the number of edges leaving the sharedNode
+    int nLinks = d_num_outgoing_edges[sharedNode + 1] - link_begin;
     if (nLinks == 0) {
         return;
     }

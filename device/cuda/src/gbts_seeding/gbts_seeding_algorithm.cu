@@ -557,7 +557,7 @@ gbts_seeding_algorithm::output_type gbts_seeding_algorithm::operator()(
     cudaMemcpyAsync(&ctx.nEdges, ctx.d_counters, sizeof(unsigned int),
                     cudaMemcpyDeviceToHost, stream);
 
-    TRACCC_DEBUG("Created " << ctx.nEdges << " edges with a cap of "
+    TRACCC_INFO("Created " << ctx.nEdges << " edges with a cap of "
                             << ctx.nMaxEdges);
 
     if (ctx.nEdges > ctx.nMaxEdges)
@@ -663,7 +663,7 @@ gbts_seeding_algorithm::output_type gbts_seeding_algorithm::operator()(
     ctx.nConnections = nStats[1];
     ctx.nConnectedEdges = nStats[2];
 
-    TRACCC_DEBUG("created " << ctx.nConnections << " edge links, found "
+    TRACCC_INFO("created " << ctx.nConnections << " edge links, found "
                             << ctx.nConnectedEdges
                             << " connected edges for seed extraction");
     if (ctx.nConnectedEdges == 0)
@@ -771,16 +771,20 @@ gbts_seeding_algorithm::output_type gbts_seeding_algorithm::operator()(
 	cudaMalloc(&ctx.d_seed_ambiguity, path_sizes[0]*sizeof(char));
 	
 	cudaMalloc(&ctx.d_edge_bids, ctx.nConnectedEdges*sizeof(unsigned long long int));
+	cudaMemsetAsync(ctx.d_edge_bids, 0, ctx.nConnectedEdges*sizeof(unsigned long long int));
 	
-	kernels::add_terminus_to_path_store<<<nBlocks, nThreads, 0, stream>>>(ctx.d_path_store, ctx.d_outgoing_paths, ctx.d_counters, ctx.nConnectedEdges);
+	kernels::add_terminus_to_path_store<<<nBlocks, nThreads, 0, stream>>>(
+		ctx.d_path_store, ctx.d_outgoing_paths, ctx.d_counters, ctx.nConnectedEdges);
 	
-	nThreads = 512;
-	nBlocks  = 1 + (ctx.nConnectedEdges - 1)/nThreads;
+	nBlocks  = 1+(path_sizes[1]-1)/16;
+	nThreads = 128;
+	//must have atleast terminus edge threads;
 	
-	kernels::fill_path_store<<<nBlocks, nThreads, 0, stream>>>(ctx.d_path_store, ctx.d_output_graph, ctx.d_levels, ctx.d_counters , path_sizes[1], m_config.max_num_neighbours);
+	kernels::fill_path_store<<<nBlocks, nThreads, 0, stream>>>(ctx.d_path_store, ctx.d_output_graph,
+		ctx.d_levels, ctx.d_counters, path_sizes[1], m_config.max_num_neighbours);
 	
 	nThreads = 128;
-	nBlocks  = 1 + (path_sizes[0] - 1)/nThreads;
+	nBlocks  = 1 + (path_sizes[0]+path_sizes[1] - 1)/nThreads;
 	
 	kernels::fit_segments<<<nBlocks, nThreads, 0, stream>>>(ctx.d_reducedSP, ctx.d_output_graph, ctx.d_path_store,
 	ctx.d_seed_proposals, ctx.d_edge_bids, ctx.d_seed_ambiguity,
@@ -790,29 +794,54 @@ gbts_seeding_algorithm::output_type gbts_seeding_algorithm::operator()(
 	cudaMemcpyAsync(&nProps, &ctx.d_counters[8], sizeof(unsigned int) , cudaMemcpyDeviceToHost , stream);
 
 	TRACCC_INFO("nProps " << nProps);
-
+	
     cudaStreamSynchronize(stream);
 
     cudaFree(ctx.d_levels);
     cudaFree(ctx.d_outgoing_paths);
-    cudaFree(ctx.d_path_store);
-    cudaFree(ctx.d_seed_proposals);
-    cudaFree(ctx.d_edge_bids);
-    cudaFree(ctx.d_seed_ambiguity);
-
-    cudaFree(ctx.d_output_graph);
-    cudaFree(ctx.d_algo_params);
     cudaFree(ctx.d_reducedSP);
+	
+	if(nProps == 0) {
+		return {0, m_mr.main};
+	}
+
+	nThreads = 128;
+	nBlocks  = 1 + (nProps - 1)/nThreads;
+	// do on one block after a few rounds?	
+	for(int round = 0; round < 5; ++round) {	
+		kernels::reset_edge_bids<<<nBlocks, nThreads, 0, stream>>>(
+			ctx.d_path_store, ctx.d_seed_proposals, 
+			ctx.d_edge_bids, ctx.d_seed_ambiguity, ctx.d_counters);
+		
+		kernels::seeds_rebid_for_edges<<<nBlocks, nThreads, 0, stream>>>(
+			ctx.d_path_store, ctx.d_seed_proposals, ctx.d_edge_bids,
+			ctx.d_seed_ambiguity, nProps);
+    }
+	kernels::reset_edge_bids<<<nBlocks, nThreads, 0, stream>>>(
+		ctx.d_path_store, ctx.d_seed_proposals, 
+		ctx.d_edge_bids, ctx.d_seed_ambiguity, ctx.d_counters);
+
+	cudaFree(ctx.d_edge_bids);
+	cudaFree(ctx.d_counters);
+    cudaFree(ctx.d_algo_params);
 
     // 8. convert to 3sp seeds and make output buffer
 	
     edm::seed_collection::buffer output_seeds(
-        nProps, m_mr.main, vecmem::data::buffer_type::resizable);
-    m_copy.get().setup(output_seeds)->ignore();
+		nProps, m_mr.main, vecmem::data::buffer_type::resizable);
+		m_copy.get().setup(output_seeds)->ignore();
+		
+	kernels::gbts_seed_conversion_kernel<<<nBlocks, nThreads, 0, stream>>>(
+		ctx.d_seed_proposals, ctx.d_seed_ambiguity, ctx.d_path_store,
+		ctx.d_output_graph, output_seeds,
+		nProps, m_config.max_num_neighbours);
 	
     cudaStreamSynchronize(stream);
 
-    cudaFree(ctx.d_counters);
+    cudaFree(ctx.d_output_graph);
+    cudaFree(ctx.d_path_store);
+    cudaFree(ctx.d_seed_proposals);
+    cudaFree(ctx.d_seed_ambiguity);
 
     error = cudaGetLastError();
 
