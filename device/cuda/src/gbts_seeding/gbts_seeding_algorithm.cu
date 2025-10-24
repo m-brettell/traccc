@@ -35,8 +35,8 @@ struct gbts_ctx {
     // nEdges, nConnections, nConnectedEdges, .., nSeeds
     unsigned int* d_counters{};
 
-    // device cut values
-    gbts_algo_params* d_algo_params;
+    // device side graph building cuts
+    gbts_graph_building_params* d_graph_building_params;	
 
     // node making and binning
     int* d_layerCounts{};
@@ -133,9 +133,9 @@ gbts_seeding_algorithm::output_type gbts_seeding_algorithm::operator()(
 
     cudaStream_t stream = details::get_stream(m_stream);
 
-    cudaMalloc(&ctx.d_algo_params, sizeof(m_config.algo_params));
-    cudaMemcpyAsync(ctx.d_algo_params, &m_config.algo_params,
-                    sizeof(m_config.algo_params), cudaMemcpyHostToDevice);
+    cudaMalloc(&ctx.d_graph_building_params, sizeof(m_config.graph_building_params));
+    cudaMemcpyAsync(ctx.d_graph_building_params, &m_config.graph_building_params,
+                    sizeof(m_config.graph_building_params), cudaMemcpyHostToDevice);
 
     // 0. bin spacepoints by the maping supplied to config.m_surfaceToLayerMap
     ctx.nSp = m_copy.get().get_size(spacepoints);
@@ -146,8 +146,8 @@ gbts_seeding_algorithm::output_type gbts_seeding_algorithm::operator()(
     unsigned int nBlocks = 1 + (ctx.nSp - 1) / nThreads;
 
     cudaMalloc(&ctx.d_layerCounts, (m_config.nLayers + 1) * sizeof(int));
-    cudaMemset(ctx.d_layerCounts, 0, (m_config.nLayers + 1) * sizeof(int));
-
+    cudaMemsetAsync(ctx.d_layerCounts, 0, (m_config.nLayers + 1) * sizeof(int), stream);
+	TRACCC_INFO(" hit " << m_config.seed_extraction_params.add_hit);
     cudaMalloc(&ctx.d_spacepointsLayer, ctx.nSp * sizeof(short));
     cudaMalloc(&ctx.d_reducedSP, ctx.nSp * sizeof(float4));
 
@@ -177,7 +177,7 @@ gbts_seeding_algorithm::output_type gbts_seeding_algorithm::operator()(
         spacepoints, measurements, ctx.d_volumeToLayerMap,
         ctx.d_surfaceToLayerMap, ctx.d_layerType, ctx.d_reducedSP,
         ctx.d_layerCounts, ctx.d_spacepointsLayer,
-        m_config.algo_params.type1_max_width, ctx.nSp,
+        m_config.graph_building_params.type1_max_width, ctx.nSp,
         m_config.volumeToLayerMap.size(), m_config.surfaceToLayerMap.size());
 
     cudaStreamSynchronize(stream);
@@ -272,7 +272,7 @@ gbts_seeding_algorithm::output_type gbts_seeding_algorithm::operator()(
     }
     size_t hist_size = sizeof(int) * m_config.n_eta_bins * m_config.n_phi_bins;
     cudaMalloc(&ctx.d_eta_phi_histo, hist_size);
-    cudaMemset(ctx.d_eta_phi_histo, 0, hist_size);
+    cudaMemsetAsync(ctx.d_eta_phi_histo, 0, hist_size, stream);
     cudaMalloc(&ctx.d_phi_cusums, hist_size);
 
     nBlocks = 1 + (ctx.nNodes - 1) / nNodesPerBlock;
@@ -368,7 +368,7 @@ gbts_seeding_algorithm::output_type gbts_seeding_algorithm::operator()(
     kernels::node_sorting_kernel<<<nBlocks, nThreads, 0, stream>>>(
         ctx.d_sp_params, ctx.d_node_eta_index, ctx.d_node_phi_index,
         ctx.d_phi_cusums, ctx.d_node_params, ctx.d_node_index,
-        ctx.d_original_sp_idx, ctx.d_algo_params, nNodesPerBlock, ctx.nNodes,
+        ctx.d_original_sp_idx, ctx.d_graph_building_params, nNodesPerBlock, ctx.nNodes,
         m_config.n_phi_bins);
 
     cudaStreamSynchronize(stream);
@@ -464,12 +464,12 @@ gbts_seeding_algorithm::output_type gbts_seeding_algorithm::operator()(
         // max radius of bin2 - min radius of bin1
         float maxDeltaR = std::fabs(rb2 - rb1);
 
-        float deltaPhi = m_config.algo_params.min_delta_phi +
-                         m_config.algo_params.dphi_coeff * maxDeltaR;
+        float deltaPhi = m_config.graph_building_params.min_delta_phi +
+                         m_config.graph_building_params.dphi_coeff * maxDeltaR;
 
         if (maxDeltaR < 60) {
-            deltaPhi = m_config.algo_params.min_delta_phi_low_dr +
-                       m_config.algo_params.dphi_coeff_low_dr * maxDeltaR;
+            deltaPhi = m_config.graph_building_params.min_delta_phi_low_dr +
+                       m_config.graph_building_params.dphi_coeff_low_dr * maxDeltaR;
         }
         // splitting large bins into more consistent sizes
 
@@ -527,7 +527,7 @@ gbts_seeding_algorithm::output_type gbts_seeding_algorithm::operator()(
                     cudaMemcpyHostToDevice, stream);
 
     cudaMalloc(&ctx.d_counters, sizeof(unsigned int) * 12);
-    cudaMemset(ctx.d_counters, 0, sizeof(unsigned int) * 12);
+    cudaMemsetAsync(ctx.d_counters, 0, sizeof(unsigned int) * 12, stream);
 
     cudaStreamSynchronize(stream);
 
@@ -537,14 +537,14 @@ gbts_seeding_algorithm::output_type gbts_seeding_algorithm::operator()(
     cudaMalloc(&ctx.d_edge_nodes, sizeof(int2) * ctx.nMaxEdges);
 
     cudaMalloc(&ctx.d_num_incoming_edges, sizeof(int) * (ctx.nNodes + 1));
-    cudaMemset(ctx.d_num_incoming_edges, 0, sizeof(int) * (ctx.nNodes + 1));
+    cudaMemsetAsync(ctx.d_num_incoming_edges, 0, sizeof(int) * (ctx.nNodes + 1), stream);
 
     nBlocks = ctx.nUsedBinPairs;
     nThreads = 128;
 
     kernels::graphEdgeMakingKernel<<<nBlocks, nThreads, 0, stream>>>(
         ctx.d_bin_pair_views, ctx.d_bin_pair_dphi, ctx.d_node_params,
-        ctx.d_algo_params, ctx.d_counters, ctx.d_edge_nodes, ctx.d_edge_params,
+        ctx.d_graph_building_params, ctx.d_counters, ctx.d_edge_nodes, ctx.d_edge_params,
         ctx.d_num_incoming_edges, ctx.nMaxEdges, m_config.n_phi_bins);
 
     cudaStreamSynchronize(stream);
@@ -616,18 +616,18 @@ gbts_seeding_algorithm::output_type gbts_seeding_algorithm::operator()(
     data_size = ctx.nEdges * sizeof(unsigned char);
 
     cudaMalloc(&ctx.d_num_neighbours, data_size);
-    cudaMemset(ctx.d_num_neighbours, 0, data_size);
+    cudaMemsetAsync(ctx.d_num_neighbours, 0, data_size, stream);
 
     data_size = ctx.nEdges * sizeof(int);
 
     cudaMalloc(&ctx.d_reIndexer, data_size);
-    cudaMemset(ctx.d_reIndexer, 0xFF, data_size);
+    cudaMemsetAsync(ctx.d_reIndexer, 0xFF, data_size, stream);
 
     data_size = m_config.max_num_neighbours * ctx.nEdges * sizeof(int);
     cudaMalloc(&ctx.d_neighbours, data_size);
 
     kernels::graphEdgeMatchingKernel<<<nBlocks, nThreads, 0, stream>>>(
-        ctx.d_algo_params, ctx.d_edge_params, ctx.d_edge_nodes,
+        ctx.d_graph_building_params, ctx.d_edge_params, ctx.d_edge_nodes,
         ctx.d_num_incoming_edges, ctx.d_edge_links, ctx.d_num_neighbours,
         ctx.d_neighbours, ctx.d_reIndexer, ctx.d_counters, ctx.nEdges,
         m_config.max_num_neighbours);
@@ -710,7 +710,7 @@ gbts_seeding_algorithm::output_type gbts_seeding_algorithm::operator()(
     data_size = ctx.nConnectedEdges * sizeof(int);
 
     cudaMalloc(&ctx.d_active_edges, data_size);
-    cudaMemset(ctx.d_active_edges, 0xFF, data_size);  // initialize to -1
+    cudaMemsetAsync(ctx.d_active_edges, 0xFF, data_size, stream);  // initialize to -1
 
     data_size = 2 * ctx.nConnectedEdges * sizeof(unsigned char);
 
@@ -718,7 +718,7 @@ gbts_seeding_algorithm::output_type gbts_seeding_algorithm::operator()(
     cudaMalloc(&ctx.d_levels, data_size);
     // initalize to 1 so level counts the maxium number of edge segments
     //  for a seed originating at the edge
-    cudaMemset(ctx.d_levels, 0x1, data_size);
+    cudaMemsetAsync(ctx.d_levels, 0x1, data_size, stream);
 
     cudaMalloc(&ctx.d_outgoing_paths, ctx.nConnectedEdges * sizeof(short2));
 
@@ -792,8 +792,9 @@ gbts_seeding_algorithm::output_type gbts_seeding_algorithm::operator()(
 	nBlocks  = 1 + (path_sizes[0]+path_sizes[1] - 1)/nThreads;
 	
 	kernels::fit_segments<<<nBlocks, nThreads, 0, stream>>>(ctx.d_reducedSP, ctx.d_output_graph, ctx.d_path_store,
-	ctx.d_seed_proposals, ctx.d_edge_bids, ctx.d_seed_ambiguity,
-	ctx.d_counters, path_sizes[0], path_sizes[1], m_config.minLevel, m_config.max_num_neighbours);
+	ctx.d_seed_proposals, ctx.d_edge_bids, ctx.d_seed_ambiguity, ctx.d_levels,
+	ctx.d_counters, path_sizes[0], path_sizes[1], m_config.minLevel, m_config.max_num_neighbours,
+	m_config.seed_extraction_params);
 	
 	int nProps = 0;
 	cudaMemcpyAsync(&nProps, &ctx.d_counters[8], sizeof(unsigned int) , cudaMemcpyDeviceToHost , stream);
@@ -828,7 +829,7 @@ gbts_seeding_algorithm::output_type gbts_seeding_algorithm::operator()(
 
 	cudaFree(ctx.d_edge_bids);
 	cudaFree(ctx.d_counters);
-    cudaFree(ctx.d_algo_params);
+    cudaFree(ctx.d_graph_building_params);
 
     // 8. convert to 3sp seeds and make output buffer
 	

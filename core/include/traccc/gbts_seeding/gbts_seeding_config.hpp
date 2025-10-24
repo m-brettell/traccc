@@ -61,7 +61,7 @@ struct gbts_consts {
 
 namespace traccc {
 
-struct gbts_algo_params {
+struct gbts_graph_building_params {
 
     // edge making cuts
     float min_delta_phi = 0.015f;
@@ -74,10 +74,11 @@ struct gbts_algo_params {
     float min_z0 = -160.0f;
     float max_z0 = 160.0f;
     float maxOuterRadius = 350.0f;
-    float cut_zMinU = min_z0 - maxOuterRadius * 45;
-    float cut_zMaxU = max_z0 + maxOuterRadius * 45;  // how to get ROI dzdr
+	// how to get ROI dzdr
+    float cut_zMinU = min_z0 - maxOuterRadius * 45.0f;
+    float cut_zMaxU = max_z0 + maxOuterRadius * 45.0f; 
 
-    float max_Kappa = 4.00e-4f;
+    float max_Kappa = 3.75e-4f;
     float low_Kappa_d0 = 0.02f; 
     float high_Kappa_d0 = 0.1f;
 
@@ -96,6 +97,34 @@ struct gbts_algo_params {
     float cut_tau_ratio_max = 0.01f;
 };
 
+struct gbts_seed_extraction_params {
+    //for 900 MeV track at eta=0
+    float sigmaMS = 0.016f;
+    // 2.5% per layer
+    float radLen  = 0.025f;
+
+    float sigma_x = 0.08f;
+    float sigma_y = 0.25f;
+
+    float weight_x = 0.5f;
+    float weight_y = 0.5f;
+
+    float maxDChi2_x = 5.0f;
+    float maxDChi2_y = 6.0f;
+	// controls if seeds of shorter lengths 
+	// can win bidding against longer seeds
+    float add_hit = 5.5f;
+    // m_J is stored in 30 + sign bits so max qual = INT_MAX/2
+    // = add_hit*max_length*qual_scale
+	float qual_scale =
+        0.01 * static_cast<float>(INT_MAX) /
+        static_cast<float>(add_hit *
+        traccc::device::gbts_consts::max_cca_iter);
+
+	float inv_max_curvature = 1100.0f;
+    float max_z0  = 160.0f;
+};
+
 struct gbts_seedfinder_config {
     bool setLinkingScheme(
         const std::vector<std::pair<int, std::vector<int>>>& binTables,
@@ -112,15 +141,18 @@ struct gbts_seedfinder_config {
     std::vector<std::array<unsigned int, 2>> surfaceToLayerMap{};
 
     // tuned for 900 MeV pT cut and scaled by input minPt
-    gbts_algo_params algo_params{};
+    gbts_graph_building_params graph_building_params{};
+
+	gbts_seed_extraction_params seed_extraction_params{};
 
     // node making bin counts
     unsigned int n_eta_bins = 0;  // calculated from input layerInfo
     unsigned int n_phi_bins = 128;
     // graph making maxiums
     unsigned char max_num_neighbours = 6;
-    // graph extraction cuts
-    int minLevel = 3;  // equivlent to a cut of #seed edges or #spacepoints-1
+    // graph extraction minimum seed edge length
+    // equivlent to a cut of #spacepoints-1
+    int minLevel = 3; 
 };
 
 }  // namespace traccc

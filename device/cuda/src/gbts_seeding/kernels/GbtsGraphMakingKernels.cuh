@@ -35,7 +35,7 @@ inline __device__ __host__ half4 make_half4(const __half x, const __half y,
 
 __global__ static void graphEdgeMakingKernel(
     const uint4* d_bin_pair_views, const float* d_bin_pair_dphi,
-    const float* d_node_params, const gbts_algo_params* d_algo_params,
+    const float* d_node_params, const gbts_graph_building_params* d_graph_building_params,
     unsigned int* d_counters, int2* d_edge_nodes, half4* d_edge_params,
     int* d_num_outgoing_edges, const unsigned int nMaxEdges,
     const unsigned int nPhiBins) {
@@ -71,15 +71,15 @@ __global__ static void graphEdgeMakingKernel(
         num_nodes1 = views.y - begin_bin1;
         num_nodes2 = views.w - begin_bin2;
 
-        minDeltaRad = d_algo_params->minDeltaRadius;
-        min_z0 = d_algo_params->min_z0;
-        max_z0 = d_algo_params->max_z0;
-        maxOuterRad = d_algo_params->maxOuterRadius;
-        min_zU = d_algo_params->cut_zMinU;
-        max_zU = d_algo_params->cut_zMaxU;
-        max_kappa = d_algo_params->max_Kappa;
-        low_Kappa_d0 = d_algo_params->low_Kappa_d0;
-        high_Kappa_d0 = d_algo_params->high_Kappa_d0;
+        minDeltaRad = d_graph_building_params->minDeltaRadius;
+        min_z0 = d_graph_building_params->min_z0;
+        max_z0 = d_graph_building_params->max_z0;
+        maxOuterRad = d_graph_building_params->maxOuterRadius;
+        min_zU = d_graph_building_params->cut_zMinU;
+        max_zU = d_graph_building_params->cut_zMaxU;
+        max_kappa = d_graph_building_params->max_Kappa;
+        low_Kappa_d0 = d_graph_building_params->low_Kappa_d0;
+        high_Kappa_d0 = d_graph_building_params->high_Kappa_d0;
     }
 
     __syncthreads();
@@ -256,7 +256,7 @@ __global__ static void graphEdgeLinkingKernel(const int2* d_edge_nodes,
 }
 
 __global__ static void graphEdgeMatchingKernel(
-    const gbts_algo_params* d_algo_params, const half4* d_edge_params,
+    const gbts_graph_building_params* d_graph_building_params, const half4* d_edge_params,
     const int2* d_edge_nodes, const int* d_num_outgoing_edges,
     const int* d_edge_links, unsigned char* d_num_neighbours, int* d_neighbours,
     int* d_reIndexer, unsigned int* d_counters, const unsigned int nEdges,
@@ -268,9 +268,9 @@ __global__ static void graphEdgeMatchingKernel(
     __shared__ __half PI_2_h;
     __shared__ __half ONE_h;
     if (threadIdx.x == 0) {
-        cut_dphi_max = __float2half(d_algo_params->cut_dphi_max);
-        cut_dcurv_max = __float2half(d_algo_params->cut_dcurv_max);
-        cut_tau_ratio_max = __float2half(d_algo_params->cut_tau_ratio_max);
+        cut_dphi_max = __float2half(d_graph_building_params->cut_dphi_max);
+        cut_dcurv_max = __float2half(d_graph_building_params->cut_dcurv_max);
+        cut_tau_ratio_max = __float2half(d_graph_building_params->cut_tau_ratio_max);
 
         PI_h = __float2half(CUDART_PI_F);
         PI_2_h = __float2half(2 * CUDART_PI_F);

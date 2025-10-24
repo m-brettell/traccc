@@ -344,41 +344,18 @@ __device__ inline void edgeState::initialize(
  */
 inline __device__ bool update(
     edgeState* new_ts, const edgeState* ts,
-    const float4& node1_params) {  // params are x, y, z, type
-
-	//for 900 MeV track at eta=0
-	const float sigmaMS = 0.016; 
-	// 2.5% per layer
-	const float radLen  = 0.025; 
-
-    const float sigma_x = 0.08f; 
-    const float sigma_y = 0.25f;
-
-    const float weight_x = 0.5f;
-    const float weight_y = 0.5f;
-
-    const float maxDChi2_x = 5.0f; 
-    const float maxDChi2_y = 6.0f; 
-
-    const float add_hit = 14.0f;
-    // m_J is stored in 30 + sign bits so max qual = INT_MAX/2 =
-    // add_hit*max_length*qual_scale
-    const float qual_scale =
-        0.5 * static_cast<float>(INT_MAX) /
-        static_cast<float>(add_hit *
-        traccc::device::gbts_consts::max_cca_iter) - 1;
- 
-	const float max_curvature = 1.1e-3f;
-	const float max_z0  = 160.0;
+    const float4& node1_params,
+	// node params are x, y, z, type
+	const gbts_seed_extraction_params& KF_params) {  
  
 	float tau2 = ts->m_Y[1]*ts->m_Y[1];
 	float invSin2 = 1 + tau2;
     
 	float lenCorr = (node1_params.w != -1) ? invSin2 : invSin2/tau2;
-	float minPtFrac = fabsf(ts->m_X[2]) / max_curvature;
+	float minPtFrac = fabsf(ts->m_X[2]) * KF_params.inv_max_curvature;
 	
-	float corrMS = sigmaMS*minPtFrac;
-	float sigma2 = radLen*lenCorr*corrMS*corrMS;// /invSin2;
+	float corrMS = KF_params.sigmaMS*minPtFrac;
+	float sigma2 = KF_params.radLen*lenCorr*corrMS*corrMS; // /invSin2;
 
     // add ms.
     float m_Cx11 = ts->m_Cx(1, 1) + sigma2;
@@ -438,40 +415,44 @@ inline __device__ bool update(
 
     if (!ts->m_head_node_type) {
         // barrel TO-DO: split into barrel Pixel and barrel SCT
-        sigma_rz = sigma_y * sigma_y;
+        sigma_rz = KF_params.sigma_y;
     } else {
-        sigma_rz = sigma_y * ts->m_Y[1];
-        sigma_rz = sigma_rz * sigma_rz;
+        sigma_rz = KF_params.sigma_y * ts->m_Y[1];
     }
+    sigma_rz = sigma_rz * sigma_rz;
 
-    float Dx = 1 / (new_ts->m_Cx(0, 0) + sigma_x * sigma_x);
+    float Dx = 1 / (new_ts->m_Cx(0, 0) + KF_params.sigma_x * KF_params.sigma_x);
 
     float Dy = 1 / (new_ts->m_Cy(0, 0) + sigma_rz);
 
     float dchi2_x = resid_x * resid_x * Dx;
     float dchi2_y = resid_y * resid_y * Dy;
 
-    if (dchi2_x > maxDChi2_x || dchi2_y > maxDChi2_y) {
+    if (dchi2_x > KF_params.maxDChi2_x || dchi2_y > KF_params.maxDChi2_y) {
 		return false;
     }
 
     // state update
     new_ts->m_J =
-        ts->m_J +
-        static_cast<int>((add_hit - dchi2_x * weight_x - dchi2_y * weight_y) *
-                         qual_scale);
+        ts->m_J + static_cast<int>(
+		(KF_params.add_hit
+		- dchi2_x * KF_params.weight_x 
+		- dchi2_y * KF_params.weight_y)
+		* KF_params.qual_scale);
 
     for (int i = 0; i < 3; i++) {
         new_ts->m_X[i] += Dx * new_ts->m_Cx(0, i) * resid_x;
     }
-	if(fabsf(new_ts->m_X[2]) < max_curvature) {
+		
+	if(fabsf(new_ts->m_X[2]) > KF_params.inv_max_curvature) {
 		return false;
 	}
+	
 	for (int i = 0; i < 2; i++) {
         new_ts->m_Y[i] += Dx * new_ts->m_Cy(0, i) * resid_y;
     }
 	float z0 = new_ts->m_Y[0] - new_ts->m_refY*ts->m_Y[1];
-	if(fabsf(z0) > max_z0) {
+	if(fabsf(z0) > KF_params.max_z0) {
 		return false;
 	}
 
@@ -542,8 +523,9 @@ inline __device__ void add_seed_proposal(const int m_J, const int path_idx,
 }
 
 void __global__ fit_segments(float4* d_sp_params, int* d_output_graph, int2* d_path_store,
-	int2* d_seed_proposals, unsigned long long int* d_edge_bids, char* d_seed_ambiguity,
-	unsigned int* d_counters, int nPaths, int nTerminusEdges, int minLevel, unsigned int max_num_neighbours) {
+	int2* d_seed_proposals, unsigned long long int* d_edge_bids, char* d_seed_ambiguity, char* d_levels,
+	unsigned int* d_counters, int nPaths, int nTerminusEdges, int minLevel, unsigned int max_num_neighbours,
+	gbts_seed_extraction_params seed_extraction_params) {
 	
 	// take an extracted path and fit it to produce a quality score
 	int path_idx = threadIdx.x + blockIdx.x*blockDim.x + nTerminusEdges;
@@ -560,7 +542,10 @@ void __global__ fit_segments(float4* d_sp_params, int* d_output_graph, int2* d_p
 	edgeState state2;
 	
 	int2 path = d_path_store[path_idx];
-	
+	// boost quality for high level seeds later
+	char level = d_levels[path.x];	
+
+
 	int nodeidx = d_output_graph[traccc::device::gbts_consts::node1 + edge_size*path.x];
 	float4 node1 = d_sp_params[nodeidx];
 	nodeidx = d_output_graph[traccc::device::gbts_consts::node2 + edge_size*path.x];
@@ -573,10 +558,10 @@ void __global__ fit_segments(float4* d_sp_params, int* d_output_graph, int2* d_p
 		toggle = !toggle;
 		node2 = d_sp_params[d_output_graph[traccc::device::gbts_consts::node2 + edge_size*path.x]];
 		if(toggle) {
-			if(!update(&state1, &state2, node2)) {
+			if(!update(&state1, &state2, node2, seed_extraction_params)) {
 				break;
 			}
-		} else if(!update(&state2, &state1, node2)) {
+		} else if(!update(&state2, &state1, node2, seed_extraction_params)) {
 			break;
 		}
 		length++;
@@ -589,6 +574,7 @@ void __global__ fit_segments(float4* d_sp_params, int* d_output_graph, int2* d_p
 	if(toggle) {
 		qual = state1.m_J;
 	}
+	qual += 10*level*seed_extraction_params.qual_scale;
 	// perform first round of bidding for disambiguation
 	add_seed_proposal(qual, path_idx, atomicAdd(&d_counters[8], 1),
 		d_seed_ambiguity, d_seed_proposals, d_edge_bids, d_path_store);
@@ -634,7 +620,9 @@ void __global__ reset_edge_bids(int2* d_path_store, int2* d_seed_proposals, unsi
 }
 
 // TO-DO?: reset prop count each iter and make new props like CCA active_edges
-void __global__ seeds_rebid_for_edges(int2* d_path_store, int2* d_seed_proposals, unsigned long long int* d_edge_bids, char* d_seed_ambiguity, unsigned int nProps) {
+void __global__ seeds_rebid_for_edges(int2* d_path_store, int2* d_seed_proposals,
+	unsigned long long int* d_edge_bids, char* d_seed_ambiguity, unsigned int nProps) {
+	
 	for(int prop_idx = threadIdx.x + blockIdx.x*blockDim.x; prop_idx < nProps; prop_idx += blockDim.x*gridDim.x) {
 		
 		char ambi = d_seed_ambiguity[prop_idx];
@@ -675,10 +663,10 @@ void __global__ gbts_seed_conversion_kernel(
 		}
 		seed.nodes[seed.size++] = d_output_graph[traccc::device::gbts_consts::node2 + edge_size*path.x];
 		// sample begining, middle, end sp from tracklet for now
-        seeds_device.push_back({seed.nodes[seed.size - 1],
-			seed.nodes[seed.size / 2],
+        seeds_device.push_back({seed.nodes[seed.size-1],
+			seed.nodes[(1+seed.size)/2 - 1],
 			seed.nodes[0]});
-    }
+	}
 }
 
 }  // namespace traccc::cuda::kernels
