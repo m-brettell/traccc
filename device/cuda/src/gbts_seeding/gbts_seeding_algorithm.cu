@@ -776,14 +776,13 @@ gbts_seeding_algorithm::output_type gbts_seeding_algorithm::operator()(
 	cudaMalloc(&ctx.d_seed_ambiguity, path_sizes[0]*sizeof(char));
 	
 	cudaMalloc(&ctx.d_edge_bids, ctx.nConnectedEdges*sizeof(unsigned long long int));
-	cudaMemsetAsync(ctx.d_edge_bids, 0, ctx.nConnectedEdges*sizeof(unsigned long long int));
+	cudaMemsetAsync(ctx.d_edge_bids, 0, ctx.nConnectedEdges*sizeof(unsigned long long int), stream);
 	
 	kernels::add_terminus_to_path_store<<<nBlocks, nThreads, 0, stream>>>(
 		ctx.d_path_store, ctx.d_outgoing_paths, ctx.d_counters, ctx.nConnectedEdges);
 	
 	nBlocks  = 1+(path_sizes[1]-1)/16;
 	nThreads = 128;
-	//must have atleast terminus edge threads;
 	
 	kernels::fill_path_store<<<nBlocks, nThreads, 0, stream>>>(ctx.d_path_store, ctx.d_output_graph,
 		ctx.d_levels, ctx.d_counters, path_sizes[1], m_config.max_num_neighbours);
@@ -814,19 +813,23 @@ gbts_seeding_algorithm::output_type gbts_seeding_algorithm::operator()(
 	nThreads = 128;
 	nBlocks  = 1 + (nProps - 1)/nThreads;
 	
+	kernels::reset_edge_bids<<<nBlocks, nThreads, 0, stream>>>(
+		ctx.d_path_store, ctx.d_seed_proposals, 
+		ctx.d_edge_bids, ctx.d_seed_ambiguity, ctx.d_counters, -1);
+	
 	for(int round = 0; round < 5; ++round) {	
-		kernels::reset_edge_bids<<<nBlocks, nThreads, 0, stream>>>(
-			ctx.d_path_store, ctx.d_seed_proposals, 
-			ctx.d_edge_bids, ctx.d_seed_ambiguity, ctx.d_counters);
+		
+		cudaMemsetAsync(ctx.d_edge_bids, 0, ctx.nConnectedEdges*sizeof(unsigned long long int), stream);	
 		
 		kernels::seeds_rebid_for_edges<<<nBlocks, nThreads, 0, stream>>>(
 			ctx.d_path_store, ctx.d_seed_proposals, ctx.d_edge_bids,
 			ctx.d_seed_ambiguity, nProps);
+			
+		kernels::reset_edge_bids<<<nBlocks, nThreads, 0, stream>>>(
+			ctx.d_path_store, ctx.d_seed_proposals, 
+			ctx.d_edge_bids, ctx.d_seed_ambiguity, ctx.d_counters, round);
     }
-	kernels::reset_edge_bids<<<nBlocks, nThreads, 0, stream>>>(
-		ctx.d_path_store, ctx.d_seed_proposals, 
-		ctx.d_edge_bids, ctx.d_seed_ambiguity, ctx.d_counters);
-
+	
 	cudaFree(ctx.d_edge_bids);
 	cudaFree(ctx.d_counters);
     cudaFree(ctx.d_graph_building_params);

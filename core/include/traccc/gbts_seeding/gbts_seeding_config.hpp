@@ -78,7 +78,7 @@ struct gbts_graph_building_params {
     float cut_zMinU = min_z0 - maxOuterRadius * 45.0f;
     float cut_zMaxU = max_z0 + maxOuterRadius * 45.0f; 
 
-    float max_Kappa = 3.75e-4f;
+    float max_Kappa = 4.00e-4f;
     float low_Kappa_d0 = 0.02f; 
     float high_Kappa_d0 = 0.1f;
 
@@ -114,14 +114,14 @@ struct gbts_seed_extraction_params {
 	// controls if seeds of shorter lengths 
 	// can win bidding against longer seeds
     float add_hit = 5.5f;
-    // m_J is stored in 30 + sign bits so max qual = INT_MAX/2
-    // = add_hit*max_length*qual_scale
+    // m_J is stored in 30 + 1 bits
+    //max qual = add_hit*max_length*qual_scale
 	float qual_scale =
         0.01 * static_cast<float>(INT_MAX) /
         static_cast<float>(add_hit *
         traccc::device::gbts_consts::max_cca_iter);
-
-	float inv_max_curvature = 1100.0f;
+	
+	float inv_max_curvature = 900.0f;
     float max_z0  = 160.0f;
 };
 

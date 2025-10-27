@@ -22,13 +22,13 @@ struct edgeState {
                                       const float4& node2_params);
 
     __device__ inline float& m_Cx(const int i, const int j) {
-        return Cx[i + j + 1 * (i == 0) * (j == 0)];
+        return Cx[i + j + 1 * (i != 0) * (j != 0)];
     }
     __device__ inline float& m_Cy(const int i, const int j) {
         return Cy[i + j];
     }
     __device__ inline const float& m_Cx(const int i, const int j) const {
-        return Cx[i + j + 1 * (i == 0) * (j == 0)];
+        return Cx[i + j + 1 * (i != 0) * (j != 0)];
     }
     __device__ inline const float& m_Cy(const int i, const int j) const {
         return Cy[i + j];
@@ -37,13 +37,13 @@ struct edgeState {
     float m_X[3], m_Y[2];
     float m_c, m_s, m_refX, m_refY;
 
-    int m_J : 31;
+    float m_J;
 
-    bool m_head_node_type : 1;
+    bool m_head_node_type;
 
     // upper triangle of the Cov matrix for the parabola in the x,y plane since
     // symetry gives the rest
-    float Cx[5];  //(0,0), (0,1), (0,2), (1,1), (1,2), (2,2)
+    float Cx[6];  //(0,0), (0,1), (0,2), (1,1), (1,2), (2,2)
     // Cov matrix for the linear fit of eta and z
     float Cy[3];  //(0,0), (0,1), (1,1)
 };
@@ -284,7 +284,7 @@ void __global__ fill_path_store(int2* d_path_store, int* d_output_graph, char* d
 __device__ inline void edgeState::initialize(
     const float4& node1_params, const float4& node2_params) {  // x, y, z,type
 
-    m_J = 0;
+    m_J = 0.0f;
     m_head_node_type = (node1_params.w < 0);
     // n2->n1
 
@@ -317,11 +317,11 @@ __device__ inline void edgeState::initialize(
 
     m_Y[0] = node2_params.z;
     m_Y[1] = (node1_params.z - node2_params.z) / (r1 - r2);
-
+	
     memset(&m_Cx(0, 0), 0, sizeof(Cx));
     memset(&m_Cy(0, 0), 0, sizeof(Cy));
-
-    m_Cx(0, 0) = 0.25f;
+    
+	m_Cx(0, 0) = 0.25f;
     m_Cx(1, 1) = 0.001f;
     m_Cx(2, 2) = 0.001f;
 
@@ -378,8 +378,8 @@ inline __device__ bool update(
     float A = new_ts->m_refX - ts->m_refX;
     float B = (0.5f) * A * A;
     float dr = new_ts->m_refY - ts->m_refY;
-
-    new_ts->m_X[0] = ts->m_X[0] + ts->m_X[1] * A + ts->m_X[2] * B;
+    
+	new_ts->m_X[0] = ts->m_X[0] + ts->m_X[1] * A + ts->m_X[2] * B;
     new_ts->m_X[1] = ts->m_X[1] + ts->m_X[2] * A;
     new_ts->m_X[2] = ts->m_X[2];
 
@@ -388,7 +388,7 @@ inline __device__ bool update(
                          2 * A * ts->m_Cx(1, 2) * B + B * ts->m_Cx(2, 2) * B;
 
     new_ts->m_Cx(0, 1) = ts->m_Cx(0, 1) + m_Cx11 * A + ts->m_Cx(1, 2) * B +
-                         ts->m_Cx(0, 2) * A + A * A * ts->m_Cx(1, 2) +
+                         ts->m_Cx(0, 2) * A + A * ts->m_Cx(1, 2) * A +
                          A * ts->m_Cx(2, 2) * B;
 
     new_ts->m_Cx(0, 2) = ts->m_Cx(0, 2) + ts->m_Cx(1, 2) * A + ts->m_Cx(2, 2) * B;
@@ -419,11 +419,11 @@ inline __device__ bool update(
     } else {
         sigma_rz = KF_params.sigma_y * ts->m_Y[1];
     }
-    sigma_rz = sigma_rz * sigma_rz;
 
-    float Dx = 1 / (new_ts->m_Cx(0, 0) + KF_params.sigma_x * KF_params.sigma_x);
+    float inv_Dx = new_ts->m_Cx(0, 0) + KF_params.sigma_x * KF_params.sigma_x;
+	float Dx = 1/inv_Dx;
 
-    float Dy = 1 / (new_ts->m_Cy(0, 0) + sigma_rz);
+    float Dy = 1 / (new_ts->m_Cy(0, 0) + sigma_rz * sigma_rz);
 
     float dchi2_x = resid_x * resid_x * Dx;
     float dchi2_y = resid_y * resid_y * Dy;
@@ -433,40 +433,40 @@ inline __device__ bool update(
     }
 
     // state update
-    new_ts->m_J =
-        ts->m_J + static_cast<int>(
+    new_ts->m_J = ts->m_J +
 		(KF_params.add_hit
 		- dchi2_x * KF_params.weight_x 
-		- dchi2_y * KF_params.weight_y)
-		* KF_params.qual_scale);
-
-    for (int i = 0; i < 3; i++) {
+		- dchi2_y * KF_params.weight_y);
+ 
+	for (int i = 0; i < 3; i++) {
         new_ts->m_X[i] += Dx * new_ts->m_Cx(0, i) * resid_x;
     }
-		
-	if(fabsf(new_ts->m_X[2]) > KF_params.inv_max_curvature) {
+	
+	if(fabsf(new_ts->m_X[2]) * KF_params.inv_max_curvature > 1.0f) {
 		return false;
 	}
-	
+			
 	for (int i = 0; i < 2; i++) {
         new_ts->m_Y[i] += Dx * new_ts->m_Cy(0, i) * resid_y;
     }
+	
 	float z0 = new_ts->m_Y[0] - new_ts->m_refY*ts->m_Y[1];
 	if(fabsf(z0) > KF_params.max_z0) {
 		return false;
 	}
+	
+    // less loss from float precsion this way (helps prevent sign change)
+    new_ts->m_Cx(2, 2) = Dx * (new_ts->m_Cx(2, 2)*inv_Dx - new_ts->m_Cx(0, 2) * new_ts->m_Cx(0, 2));
+    new_ts->m_Cx(1, 2) = Dx * (new_ts->m_Cx(1, 2)*inv_Dx - new_ts->m_Cx(0, 1) * new_ts->m_Cx(0, 2));
+    new_ts->m_Cx(1, 1) = Dx * (new_ts->m_Cx(1, 1)*inv_Dx - new_ts->m_Cx(0, 1) * new_ts->m_Cx(0, 1));
+    new_ts->m_Cx(0, 2) = Dx * (new_ts->m_Cx(0, 2)*inv_Dx - new_ts->m_Cx(0, 0) * new_ts->m_Cx(0, 2));
+    new_ts->m_Cx(0, 1) = Dx * (new_ts->m_Cx(0, 1)*inv_Dx - new_ts->m_Cx(0, 0) * new_ts->m_Cx(0, 1));
+	new_ts->m_Cx(0, 0) *= Dx * (KF_params.sigma_x*KF_params.sigma_x);
 
-    new_ts->m_Cx(2, 2) -= Dx * new_ts->m_Cx(0, 2) * new_ts->m_Cx(0, 2);
-    new_ts->m_Cx(1, 2) -= Dx * new_ts->m_Cx(0, 1) * new_ts->m_Cx(0, 2);
-    new_ts->m_Cx(1, 1) -= Dx * new_ts->m_Cx(0, 1) * new_ts->m_Cx(0, 1);
-    new_ts->m_Cx(0, 2) -= Dx * new_ts->m_Cx(0, 0) * new_ts->m_Cx(0, 2);
-    new_ts->m_Cx(0, 1) -= Dx * new_ts->m_Cx(0, 0) * new_ts->m_Cx(0, 1);
-    new_ts->m_Cx(0, 0) -= Dx * new_ts->m_Cx(0, 0) * new_ts->m_Cx(0, 0);
-
-    new_ts->m_Cy(1, 1) -= Dx * new_ts->m_Cy(0, 1) * new_ts->m_Cy(0, 1);
-    new_ts->m_Cy(0, 1) -= Dx * new_ts->m_Cy(0, 0) * new_ts->m_Cy(0, 1);
-    new_ts->m_Cy(0, 0) -= Dx * new_ts->m_Cy(0, 0) * new_ts->m_Cy(0, 0);
-
+    new_ts->m_Cy(1, 1) -= Dy * new_ts->m_Cy(0, 1) * new_ts->m_Cy(0, 1);
+    new_ts->m_Cy(0, 1) -= Dy * new_ts->m_Cy(0, 0) * new_ts->m_Cy(0, 1);
+    new_ts->m_Cy(0, 0) -= Dy * new_ts->m_Cy(0, 0) * new_ts->m_Cy(0, 0);
+	
     new_ts->m_c = ts->m_c;
     new_ts->m_s = ts->m_s;
     new_ts->m_head_node_type = (node1_params.w < 0);
@@ -477,7 +477,7 @@ inline __device__ bool update(
 /** @brief Performs seed disambiguation through seeds biding to use edges with
  * seed quality
  *
- *  @param[in] m_J is the quality metric output by the Kalman filter
+ *  @param[in] qual is the quality metric output by the Kalman filter
  *  @param[in] path_idx the index of inital path for this seed
  *  @param[in] d_path_store stores the path each seed took through the graph in
  *  reverse order
@@ -491,26 +491,27 @@ inline __device__ bool update(
  *  @param[out] d_seed_ambiguity here is 0 if the seed is the highest quality
  *  seed using all of its edges and -1 otherwise
  */
-inline __device__ void add_seed_proposal(const int m_J, const int path_idx,
+inline __device__ void add_seed_proposal(const int qual, const int path_idx,
                                          const unsigned int prop_idx,
                                          char* d_seed_ambiguity,
                                          int2* d_seed_proposals,
                                          unsigned long long int* d_edge_bids,
-                                         const int2* d_path_store) {
+                                         const int2* d_path_store, char depth = -1) {
 
     // new seed bids for its edges
-    d_seed_proposals[prop_idx] = make_int2(m_J, path_idx);
+    d_seed_proposals[prop_idx] = make_int2(qual, path_idx);
     d_seed_ambiguity[prop_idx] = 0;
     __threadfence();  // ensure above proposal info is written before biding
 
     unsigned long long int seed_bid =
-        (static_cast<unsigned long long int>(m_J) << 32) |
+        (static_cast<unsigned long long int>(qual) << 32) |
         (static_cast<unsigned long long int>(prop_idx));
 	
 	//dummy path to start the loop
 	int2 path = make_int2(0,d_seed_proposals[prop_idx].y);
-	while(path.y >= 0) {
+	while(path.y >= 0 && depth != 0) {
 		path = d_path_store[path.y];
+		depth--;
 
         unsigned long long int competing_offer =
             atomicMax(&d_edge_bids[path.x], seed_bid);
@@ -519,7 +520,7 @@ inline __device__ void add_seed_proposal(const int m_J, const int path_idx,
         } else if (competing_offer != 0) {
             d_seed_ambiguity[competing_offer & 0xFFFFFFFFLL] = -1;
         }  // default bids are 0 so no need to replace
-    }
+	}
 }
 
 void __global__ fit_segments(float4* d_sp_params, int* d_output_graph, int2* d_path_store,
@@ -535,16 +536,12 @@ void __global__ fit_segments(float4* d_sp_params, int* d_output_graph, int2* d_p
 	int edge_size = 2 + 1 + max_num_neighbours;	
 
 	char length = 1;
-	bool toggle = true;
-	// registers can't be indexed for CUDA
-	// so toggle like this insted
+
+	bool toggle = false;
 	edgeState state1;
 	edgeState state2;
 	
 	int2 path = d_path_store[path_idx];
-	// boost quality for high level seeds later
-	char level = d_levels[path.x];	
-
 
 	int nodeidx = d_output_graph[traccc::device::gbts_consts::node1 + edge_size*path.x];
 	float4 node1 = d_sp_params[nodeidx];
@@ -555,7 +552,6 @@ void __global__ fit_segments(float4* d_sp_params, int* d_output_graph, int2* d_p
 	while(path.y >= 0) {
 		path = d_path_store[path.y];
 
-		toggle = !toggle;
 		node2 = d_sp_params[d_output_graph[traccc::device::gbts_consts::node2 + edge_size*path.x]];
 		if(toggle) {
 			if(!update(&state1, &state2, node2, seed_extraction_params)) {
@@ -564,30 +560,40 @@ void __global__ fit_segments(float4* d_sp_params, int* d_output_graph, int2* d_p
 		} else if(!update(&state2, &state1, node2, seed_extraction_params)) {
 			break;
 		}
+		toggle = !toggle;
 		length++;
 	}
 	// only keep long enough seeds
 	if(length < minLevel) {
 		return;
 	}
-	int qual = state2.m_J;
+	int qual = 0;
 	if(toggle) {
-		qual = state1.m_J;
+		qual = static_cast<int>(1e5*state2.m_J);
+		
+	} else {
+		qual = static_cast<int>(1e5*state1.m_J);
 	}
-	qual += 10*level*seed_extraction_params.qual_scale;
 	// perform first round of bidding for disambiguation
 	add_seed_proposal(qual, path_idx, atomicAdd(&d_counters[8], 1),
-		d_seed_ambiguity, d_seed_proposals, d_edge_bids, d_path_store);
+		d_seed_ambiguity, d_seed_proposals, d_edge_bids, d_path_store, 1);
 }
 
-void __global__ reset_edge_bids(int2* d_path_store, int2* d_seed_proposals, unsigned long long int* d_edge_bids, char* d_seed_ambiguity, unsigned int* d_counters) {
+void __global__ reset_edge_bids(int2* d_path_store, int2* d_seed_proposals, unsigned long long int* d_edge_bids, char* d_seed_ambiguity, unsigned int* d_counters, int round) {
 	
 	int nProps = d_counters[8];
+	// first round find best seed starting at each edge
+	char depth = (round == -1) ? 1 : 2;
 	for(int prop_idx = threadIdx.x + blockIdx.x*blockDim.x; prop_idx < nProps; prop_idx += blockDim.x*gridDim.x) {
 		
 		char ambi = d_seed_ambiguity[prop_idx];
-		if(ambi ==  -2 | ambi == 0) {
+		if(ambi ==  -2 | (ambi == 0 && round != -1)) {
 			//only reset maybes
+			continue;
+		}
+		if(round == -1 & ambi == 0) {
+			// now re-bid over all edges in later rounds
+			d_seed_ambiguity[prop_idx] = 1;
 			continue;
 		}
 		int2 prop = d_seed_proposals[prop_idx];
@@ -595,26 +601,23 @@ void __global__ reset_edge_bids(int2* d_path_store, int2* d_seed_proposals, unsi
 		bool isgood = true;
 		// dummy path to start the loop
 		int2 path = make_int2(0, prop.y);
-		while(path.y >= 0) {
+		while(path.y >= 0 && depth != 0) {
 			path = d_path_store[path.y];
+			depth--;
 		
 			unsigned long long int best_bid = d_edge_bids[path.x];
-			if (best_bid == 0) {
-				continue;  // already reset
-			}
 			if (d_seed_ambiguity[best_bid & 0xFFFFFFFFLL] == 0) {
 				isgood = false;
 				break;
-			}  // clashes with definate seed
-			// reset edge bid from (possibly) fake seed
-			d_edge_bids[path.x] = 0;
+			}
 		}
 		if (isgood) {
 			d_seed_ambiguity[prop_idx] = 1;
+			if(round == -1 || round > 3) printf("hi %i>",round);
 		}  // flag as maybe seed
 		else {
 			d_seed_ambiguity[prop_idx] = -2;
-			// definate fake	
+			// definate fake (never the best)
 		}
 	}
 }
@@ -633,7 +636,7 @@ void __global__ seeds_rebid_for_edges(int2* d_path_store, int2* d_seed_proposals
 		int2 prop = d_seed_proposals[prop_idx];
 		
 		add_seed_proposal(prop.x, prop.y, prop_idx,
-			d_seed_ambiguity, d_seed_proposals, d_edge_bids, d_path_store);
+			d_seed_ambiguity, d_seed_proposals, d_edge_bids, d_path_store, 2);
 	}
 }
 
