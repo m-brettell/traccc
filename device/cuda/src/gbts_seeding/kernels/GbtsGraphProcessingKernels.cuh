@@ -571,7 +571,8 @@ void __global__ fit_segments(float4* d_sp_params, int* d_output_graph, int2* d_p
 	int qual = static_cast<int>(1e5*state1.m_J);
 	
 	int prop_idx = atomicAdd(&d_counters[8], 1);
-	d_seed_length[prop_idx] = (fabsf(state1.m_Y[1]) < 2.1f && fabsf(state1.m_X[2]*900) < 0.5f) ? 1 : length;
+	d_seed_length[prop_idx] = (fabsf(state1.m_Y[1]) < seed_extraction_params.weak_biding_eta && 
+	fabsf(state1.m_X[2]*seed_extraction_params.inv_max_curvature) < seed_extraction_params.weak_biding_curv_ratio) ? 1 : length;
 	// perform first round of bidding for disambiguation
 	add_seed_proposal(qual, path_idx, prop_idx,
 		d_seed_ambiguity, d_seed_proposals, d_edge_bids, d_path_store, 1);

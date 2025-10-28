@@ -148,8 +148,8 @@ gbts_seeding_algorithm::output_type gbts_seeding_algorithm::operator()(
 
     cudaMalloc(&ctx.d_layerCounts, (m_config.nLayers + 1) * sizeof(int));
     cudaMemsetAsync(ctx.d_layerCounts, 0, (m_config.nLayers + 1) * sizeof(int), stream);
-	TRACCC_INFO(" hit " << m_config.seed_extraction_params.add_hit);
-    cudaMalloc(&ctx.d_spacepointsLayer, ctx.nSp * sizeof(short));
+    
+	cudaMalloc(&ctx.d_spacepointsLayer, ctx.nSp * sizeof(short));
     cudaMalloc(&ctx.d_reducedSP, ctx.nSp * sizeof(float4));
 
     cudaMalloc(&ctx.d_volumeToLayerMap,
@@ -437,7 +437,9 @@ gbts_seeding_algorithm::output_type gbts_seeding_algorithm::operator()(
         // large bins will be split into smaller sub-views
 
         int nNodesInBin1 = bin1_end - bin1_begin;
-
+		if(bin1_begin > bin1_end) {
+			nNodesInBin1 = bin1_begin - bin1_end;
+		}
         int_nBinPairs +=
             1 + (nNodesInBin1 - 1) /
                     traccc::device::gbts_consts::node_buffer_length;

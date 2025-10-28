@@ -113,7 +113,7 @@ struct gbts_seed_extraction_params {
     float maxDChi2_y = 6.0f;
 	// controls if seeds of shorter lengths 
 	// can win bidding against longer seeds
-    float add_hit = 5.5f;
+    float add_hit = 14.0f;
     // m_J is stored in 30 + 1 bits
     //max qual = add_hit*max_length*qual_scale
 	float qual_scale =
@@ -123,6 +123,11 @@ struct gbts_seed_extraction_params {
 	
 	float inv_max_curvature = 900.0f;
     float max_z0  = 160.0f;
+
+	// range to only require a seed to
+	// be best on it's outermost edge
+	float weak_biding_eta = 2.1f;
+	float weak_biding_curv_ratio = 0.5f;
 };
 
 struct gbts_seedfinder_config {
