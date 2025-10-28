@@ -87,40 +87,35 @@ combinatorial_kalman_filter(
     measurement_collection_types::const_device measurements{measurements_view};
 
     // Check contiguity of the measurements
-    assert(is_contiguous_on(measurement_module_projection(), measurements));
+    assert(
+        host::is_contiguous_on(measurement_module_projection(), measurements));
 
-    // Get copy of barcode uniques
-    std::vector<measurement> uniques;
-    uniques.resize(measurements.size());
+    // Get index ranges in the measurement container per detector surface
+    std::vector<unsigned int> meas_ranges;
+    meas_ranges.reserve(det.surfaces().size());
 
-    std::vector<measurement>::iterator uniques_end =
-        std::unique_copy(measurements.begin(), measurements.end(),
-                         uniques.begin(), measurement_equal_comp());
-    const auto n_modules =
-        static_cast<unsigned int>(uniques_end - uniques.begin());
+    for (const auto& sf_desc : det.surfaces()) {
+        // Measurements can only be found on sensitive surfaces
+        if (!sf_desc.is_sensitive()) {
+            // Lower range index is the upper index of the previous range
+            // This is guaranteed by the measurement sorting step
+            const auto sf_idx{sf_desc.index()};
+            const unsigned int lo{sf_idx == 0u ? 0u : meas_ranges[sf_idx - 1u]};
 
-    // Get upper bounds of unique elements
-    std::vector<unsigned int> upper_bounds;
-    upper_bounds.reserve(n_modules);
-    for (unsigned int i = 0; i < n_modules; i++) {
-        measurement_collection_types::const_device::iterator up =
-            std::upper_bound(measurements.begin(), measurements.end(),
-                             uniques[i], measurement_sort_comp());
-        upper_bounds.push_back(
+            // Hand the upper index of the previous range through to assign
+            // the lower index of the next valid range correctly
+            meas_ranges.push_back(lo);
+            continue;
+        }
+
+        auto up = std::upper_bound(measurements.begin(), measurements.end(),
+                                   sf_desc, measurement_sf_comp());
+        meas_ranges.push_back(
             static_cast<unsigned int>(std::distance(measurements.begin(), up)));
     }
+
     const measurement_collection_types::const_device::size_type n_meas =
         measurements.size();
-
-    // Get the number of measurements of each module
-    std::vector<unsigned int> sizes(n_modules);
-    std::adjacent_difference(upper_bounds.begin(), upper_bounds.end(),
-                             sizes.begin());
-
-    // Create barcode sequence
-    std::vector<detray::geometry::barcode> barcodes(n_modules);
-    std::transform(uniques.begin(), uniques_end, barcodes.begin(),
-                   [](const measurement& m) { return m.surface_link; });
 
     std::vector<std::vector<candidate_link>> links;
     links.resize(config.max_track_candidates_per_track);
@@ -186,6 +181,11 @@ combinatorial_kalman_filter(
                      ? 0
                      : links[step - 1][param_to_link[step - 1][in_param_id]]
                            .n_skipped);
+            const unsigned int consecutive_skipped =
+                (step == 0
+                     ? 0
+                     : links[step - 1][param_to_link[step - 1][in_param_id]]
+                           .n_consecutive_skipped);
             const scalar prev_chi2_sum =
                 (step == 0
                      ? 0.f
@@ -225,48 +225,28 @@ combinatorial_kalman_filter(
                     sf);
             }
 
-            // Get barcode and measurements range on surface
-            const auto bcd = in_param.surface_link();
-            assert(!bcd.is_invalid());
-            std::pair<unsigned int, unsigned int> range;
-
-            // Find the corresponding index of bcd in barcode vector
-
-            const auto lo2 =
-                std::lower_bound(barcodes.begin(), barcodes.end(), bcd);
-
-            const auto bcd_id = std::distance(barcodes.begin(), lo2);
-
-            if (lo2 == barcodes.begin()) {
-                range.first = 0u;
-                range.second = upper_bounds[static_cast<std::size_t>(bcd_id)];
-            } else if (lo2 == barcodes.end()) {
-                range.first = 0u;
-                range.second = 0u;
-            } else {
-                range.first =
-                    upper_bounds[static_cast<std::size_t>(bcd_id - 1)];
-                range.second = upper_bounds[static_cast<std::size_t>(bcd_id)];
-            }
-
             /*****************************************************************
              * Find tracks (CKF)
              *****************************************************************/
+
+            // Iterate over the measurements for this surface
+            const auto sf_idx{sf.index()};
+            const unsigned int lo{sf_idx == 0u ? 0u : meas_ranges[sf_idx - 1]};
+            const unsigned int up{meas_ranges[sf_idx]};
 
             std::vector<std::tuple<candidate_link,
                                    bound_track_parameters<algebra_type>>>
                 best_links;
 
             // Iterate over the measurements
-            for (unsigned int item_id = range.first; item_id < range.second;
-                 item_id++) {
+            for (unsigned int meas_id = lo; meas_id < up; meas_id++) {
 
                 // The measurement on surface to handle.
-                const measurement& meas = measurements.at(item_id);
+                const measurement& meas = measurements.at(meas_id);
 
                 // Create a standalone track state object.
                 auto trk_state =
-                    edm::make_track_state<algebra_type>(measurements, item_id);
+                    edm::make_track_state<algebra_type>(measurements, meas_id);
 
                 const bool is_line = sf.template visit_mask<is_line_visitor>();
 
@@ -284,9 +264,10 @@ combinatorial_kalman_filter(
                     best_links.push_back(
                         {{.step = step,
                           .previous_candidate_idx = in_param_id,
-                          .meas_idx = item_id,
+                          .meas_idx = meas_id,
                           .seed_idx = orig_param_id,
                           .n_skipped = skip_counter,
+                          .n_consecutive_skipped = 0,
                           .chi2 = chi2,
                           .chi2_sum = prev_chi2_sum + chi2,
                           .ndf_sum = prev_ndf_sum + meas.meas_dim},
@@ -332,6 +313,7 @@ combinatorial_kalman_filter(
                      .meas_idx = std::numeric_limits<unsigned int>::max(),
                      .seed_idx = orig_param_id,
                      .n_skipped = skip_counter + 1,
+                     .n_consecutive_skipped = consecutive_skipped + 1,
                      .chi2 = std::numeric_limits<traccc::scalar>::max(),
                      .chi2_sum = prev_chi2_sum,
                      .ndf_sum = prev_ndf_sum});
@@ -502,20 +484,22 @@ combinatorial_kalman_filter(
             traccc::details::ckf_interactor_t::state s2;
             typename interaction_register<
                 traccc::details::ckf_interactor_t>::state s1{s2};
-            typename detray::momentum_aborter<scalar_type>::state s3{};
-            typename ckf_aborter::state s4;
+            // typename detray::parameter_resetter<
+            //     typename detector_t::algebra_type>::state s3{};
+            typename detray::momentum_aborter<scalar_type>::state s4{};
+            typename ckf_aborter::state s5;
             // Update the actor config
-            s4.min_step_length = config.min_step_length_for_next_surface;
-            s4.max_count = config.max_step_counts_for_next_surface;
-            s3.min_pT(static_cast<scalar_type>(config.min_pT));
-            s3.min_p(static_cast<scalar_type>(config.min_p));
+            s4.min_pT(static_cast<scalar_type>(config.min_pT));
+            s4.min_p(static_cast<scalar_type>(config.min_p));
+            s5.min_step_length = config.min_step_length_for_next_surface;
+            s5.max_count = config.max_step_counts_for_next_surface;
 
             // Propagate to the next surface
-            propagator.propagate(propagation, detray::tie(s0, s1, s2, s3, s4));
+            propagator.propagate(propagation, detray::tie(s0, s1, s2, s4, s5));
 
             // If a surface found, add the parameter for the next
             // step
-            if (s4.success) {
+            if (s5.success) {
                 assert(propagation._navigation.is_on_sensitive());
                 assert(!propagation._stepping.bound_params().is_invalid());
 
@@ -524,14 +508,14 @@ combinatorial_kalman_filter(
             }
             // Unless the track found a surface, it is considered a
             // tip
-            else if (!s4.success &&
+            else if (!s5.success &&
                      (step >= (config.min_track_candidates_per_track - 1u))) {
                 tips.push_back({step, link_id});
             }
 
             // If no more CKF step is expected, current candidate is
             // kept as a tip
-            if (s4.success &&
+            if (s5.success &&
                 (step == (config.max_track_candidates_per_track - 1u))) {
                 tips.push_back({step, link_id});
             }
