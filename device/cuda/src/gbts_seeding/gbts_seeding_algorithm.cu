@@ -111,7 +111,6 @@ struct gbts_ctx {
     // 0 as default/is real seed, 1 as maybe seed,
     //-1 as maybe fake seed, -2 as fake
     char* d_seed_ambiguity{};
-    char* d_seed_length{};
 };
 
 gbts_seeding_algorithm::gbts_seeding_algorithm(
@@ -777,7 +776,6 @@ gbts_seeding_algorithm::output_type gbts_seeding_algorithm::operator()(
 	cudaMalloc(&ctx.d_path_store, (path_sizes[0] + path_sizes[1])*sizeof(int2));
 	cudaMalloc(&ctx.d_seed_proposals, path_sizes[0]*sizeof(int2));
 	cudaMalloc(&ctx.d_seed_ambiguity, path_sizes[0]*sizeof(char));
-	cudaMalloc(&ctx.d_seed_length, path_sizes[0]*sizeof(char));
 	
 	cudaMalloc(&ctx.d_edge_bids, ctx.nConnectedEdges*sizeof(unsigned long long int));
 	cudaMemsetAsync(ctx.d_edge_bids, 0, ctx.nConnectedEdges*sizeof(unsigned long long int), stream);
@@ -796,7 +794,7 @@ gbts_seeding_algorithm::output_type gbts_seeding_algorithm::operator()(
 	
 	kernels::fit_segments<<<nBlocks, nThreads, 0, stream>>>(ctx.d_reducedSP, ctx.d_output_graph, ctx.d_path_store,
 	ctx.d_seed_proposals, ctx.d_edge_bids, ctx.d_seed_ambiguity, ctx.d_levels,
-	ctx.d_counters, ctx.d_seed_length, path_sizes[0], path_sizes[1], m_config.minLevel, m_config.max_num_neighbours,
+	ctx.d_counters, path_sizes[0], path_sizes[1], m_config.minLevel, m_config.max_num_neighbours,
 	m_config.seed_extraction_params);
 	
 	int nProps = 0;
@@ -819,7 +817,7 @@ gbts_seeding_algorithm::output_type gbts_seeding_algorithm::operator()(
 	
 	kernels::reset_edge_bids<<<nBlocks, nThreads, 0, stream>>>(
 		ctx.d_path_store, ctx.d_seed_proposals, ctx.d_edge_bids,
-		ctx.d_seed_ambiguity, ctx.d_counters, ctx.d_seed_length, -1);
+		ctx.d_seed_ambiguity, ctx.d_counters, -1);
 		
 	for(int round = 0; round < 5; ++round) {	
 		
@@ -827,12 +825,11 @@ gbts_seeding_algorithm::output_type gbts_seeding_algorithm::operator()(
 		
 		kernels::seeds_rebid_for_edges<<<nBlocks, nThreads, 0, stream>>>(
 			ctx.d_path_store, ctx.d_seed_proposals, ctx.d_edge_bids,
-			ctx.d_seed_ambiguity, ctx.d_seed_length, nProps);
+			ctx.d_seed_ambiguity, nProps);
 			
 		kernels::reset_edge_bids<<<nBlocks, nThreads, 0, stream>>>(
-			ctx.d_path_store, ctx.d_seed_proposals, 
-			ctx.d_edge_bids, ctx.d_seed_ambiguity, ctx.d_counters,
-			ctx.d_seed_length, round);
+			ctx.d_path_store, ctx.d_seed_proposals, ctx.d_edge_bids,
+			ctx.d_seed_ambiguity, ctx.d_counters, round);
     }
 	
 	cudaFree(ctx.d_edge_bids);
@@ -856,7 +853,6 @@ gbts_seeding_algorithm::output_type gbts_seeding_algorithm::operator()(
     cudaFree(ctx.d_path_store);
     cudaFree(ctx.d_seed_proposals);
     cudaFree(ctx.d_seed_ambiguity);
-    cudaFree(ctx.d_seed_length);
 
     error = cudaGetLastError();
 

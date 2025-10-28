@@ -78,9 +78,9 @@ struct gbts_graph_building_params {
     float cut_zMinU = min_z0 - maxOuterRadius * 45.0f;
     float cut_zMaxU = max_z0 + maxOuterRadius * 45.0f; 
 
-    float max_Kappa = 4.00e-4f;
-    float low_Kappa_d0 = 0.02f; 
-    float high_Kappa_d0 = 0.1f;
+    float max_Kappa = 3.75e-4f;
+    float low_Kappa_d0 = 0.00f; 
+    float high_Kappa_d0 = 0.0f;
 
     // tau prediction cut
     float tMin_slope = 6.7f;
@@ -123,11 +123,6 @@ struct gbts_seed_extraction_params {
 	
 	float inv_max_curvature = 900.0f;
     float max_z0  = 160.0f;
-
-	// range to only require a seed to
-	// be best on it's outermost edge
-	float weak_biding_eta = 2.1f;
-	float weak_biding_curv_ratio = 0.5f;
 };
 
 struct gbts_seedfinder_config {

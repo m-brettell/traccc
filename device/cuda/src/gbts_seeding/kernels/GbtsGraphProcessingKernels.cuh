@@ -525,7 +525,7 @@ inline __device__ void add_seed_proposal(const int qual, const int path_idx,
 
 void __global__ fit_segments(float4* d_sp_params, int* d_output_graph, int2* d_path_store,
 	int2* d_seed_proposals, unsigned long long int* d_edge_bids, char* d_seed_ambiguity, char* d_levels,
-	unsigned int* d_counters, char* d_seed_length, int nPaths, int nTerminusEdges, int minLevel, 
+	unsigned int* d_counters, int nPaths, int nTerminusEdges, int minLevel, 
 	unsigned int max_num_neighbours, gbts_seed_extraction_params seed_extraction_params) {
 	
 	// take an extracted path and fit it to produce a quality score
@@ -571,24 +571,22 @@ void __global__ fit_segments(float4* d_sp_params, int* d_output_graph, int2* d_p
 	int qual = static_cast<int>(1e5*state1.m_J);
 	
 	int prop_idx = atomicAdd(&d_counters[8], 1);
-	d_seed_length[prop_idx] = (fabsf(state1.m_Y[1]) < seed_extraction_params.weak_biding_eta && 
-	fabsf(state1.m_X[2]*seed_extraction_params.inv_max_curvature) < seed_extraction_params.weak_biding_curv_ratio) ? 1 : length;
 	// perform first round of bidding for disambiguation
+	// only on the outermost edge
 	add_seed_proposal(qual, path_idx, prop_idx,
 		d_seed_ambiguity, d_seed_proposals, d_edge_bids, d_path_store, 1);
 }
 
-void __global__ reset_edge_bids(int2* d_path_store, int2* d_seed_proposals, unsigned long long int* d_edge_bids, char* d_seed_ambiguity, unsigned int* d_counters, char* d_seed_length, int round) {
+void __global__ reset_edge_bids(int2* d_path_store, int2* d_seed_proposals, unsigned long long int* d_edge_bids, char* d_seed_ambiguity, unsigned int* d_counters, int round) {
 	
 	int nProps = d_counters[8];
 	// first round find best seed starting at each edge
 	for(int prop_idx = threadIdx.x + blockIdx.x*blockDim.x; prop_idx < nProps; prop_idx += blockDim.x*gridDim.x) {
-		char depth = (round == -1) ? 1 : d_seed_length[prop_idx];
 		
 		char ambi = d_seed_ambiguity[prop_idx];
 		if(round == -1) {
 			if(ambi == 0) {
-				// rebid 'best from edge' in later rounds
+				// rebid 'best seed from edge' in later rounds
 				d_seed_ambiguity[prop_idx] = 1;
 				continue;
 			}
@@ -607,9 +605,8 @@ void __global__ reset_edge_bids(int2* d_path_store, int2* d_seed_proposals, unsi
 		
 		// dummy path to start the loop
 		int2 path = make_int2(0, prop.y);
-		while(path.y >= 0 && depth != 0) {
+		while(path.y >= 0) {
 			path = d_path_store[path.y];
-			depth--;
 		
 			unsigned long long int best_bid = d_edge_bids[path.x];
 			if(d_seed_ambiguity[best_bid & 0xFFFFFFFFLL] == 0) {
@@ -619,7 +616,6 @@ void __global__ reset_edge_bids(int2* d_path_store, int2* d_seed_proposals, unsi
 		}
 		if (isgood) {
 			d_seed_ambiguity[prop_idx] = 1;
-			if(round == -1 || round > 3) printf("hi %i>",round);
 		}  // flag as maybe seed
 		else {
 			d_seed_ambiguity[prop_idx] = -2;
@@ -630,7 +626,7 @@ void __global__ reset_edge_bids(int2* d_path_store, int2* d_seed_proposals, unsi
 
 // TO-DO?: reset prop count each iter and make new props like CCA active_edges
 void __global__ seeds_rebid_for_edges(int2* d_path_store, int2* d_seed_proposals,
-	unsigned long long int* d_edge_bids, char* d_seed_ambiguity, char* d_seed_length , unsigned int nProps) {
+	unsigned long long int* d_edge_bids, char* d_seed_ambiguity, unsigned int nProps) {
 	
 	for(int prop_idx = threadIdx.x + blockIdx.x*blockDim.x; prop_idx < nProps; prop_idx += blockDim.x*gridDim.x) {
 		
@@ -642,7 +638,7 @@ void __global__ seeds_rebid_for_edges(int2* d_path_store, int2* d_seed_proposals
 		int2 prop = d_seed_proposals[prop_idx];
 		
 		add_seed_proposal(prop.x, prop.y, prop_idx,
-			d_seed_ambiguity, d_seed_proposals, d_edge_bids, d_path_store, d_seed_length[prop_idx]);
+			d_seed_ambiguity, d_seed_proposals, d_edge_bids, d_path_store, -1);
 	}
 }
 
