@@ -88,6 +88,7 @@ full_chain_algorithm::full_chain_algorithm(
       m_filter_config(filter_config),
 			m_gbts_config(gbts_config),
       m_track_params_estimation_config(track_params_estimation_config),
+      m_finding_config(finding_config),
       m_fitting_config(fitting_config),
       usingGBTS(useGBTS) {
 
@@ -250,9 +251,16 @@ bound_track_parameters_collection_types::host full_chain_algorithm::seeding(
         // Run the seed-finding (asynchronously).
         const spacepoint_formation_algorithm::output_type spacepoints =
             m_spacepoint_formation(m_device_detector, measurements);
-        const seed_parameter_estimation_algorithm::output_type track_params =
-            m_track_parameter_estimation(m_field, measurements, spacepoints,
-                                         m_seeding(spacepoints));
+        
+				seeding_algorithm::output_type seeds;
+						if (usingGBTS) {
+								seeds = m_gbts_seeding(spacepoints, measurements);
+						} else {
+								seeds = m_seeding(spacepoints);
+						}
+						const seed_parameter_estimation_algorithm::output_type track_params =
+								m_track_parameter_estimation(m_field, measurements, spacepoints,
+																						 seeds);
 
         // Copy a limited amount of result data back to the host.
         const auto host_seeds = m_copy.to(track_params, m_cached_pinned_host_mr,
