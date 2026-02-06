@@ -142,6 +142,7 @@ TEST_P(CkfSparseTrackTelescopeTests, Run) {
     // Fitting algorithm object
     traccc::fitting_config fit_cfg;
     fit_cfg.ptc_hypothesis = ptc;
+    fit_cfg.min_pT = 100.f * traccc::unit<float>::MeV;
     traccc::host::kalman_fitting_algorithm host_fitting(fit_cfg, host_mr, copy);
 
     // Iterate over events
@@ -150,7 +151,8 @@ TEST_P(CkfSparseTrackTelescopeTests, Run) {
         // Truth Track Candidates
         traccc::event_data evt_data(path, i_evt, host_mr);
 
-        traccc::measurement_collection_types::host truth_measurements{&host_mr};
+        traccc::edm::measurement_collection<traccc::default_algebra>::host
+            truth_measurements{host_mr};
         traccc::edm::track_container<traccc::default_algebra>::host
             truth_track_candidates{host_mr};
         evt_data.generate_truth_candidates(truth_track_candidates,
@@ -168,8 +170,8 @@ TEST_P(CkfSparseTrackTelescopeTests, Run) {
         ASSERT_EQ(seeds.size(), n_truth_tracks);
 
         // Read measurements
-        traccc::measurement_collection_types::host measurements_per_event{
-            &host_mr};
+        traccc::edm::measurement_collection<traccc::default_algebra>::host
+            measurements_per_event{host_mr};
         traccc::io::read_measurements(measurements_per_event, i_evt, path);
 
         // Run finding

@@ -1,6 +1,6 @@
 /** TRACCC library, part of the ACTS project (R&D line)
  *
- * (c) 2024-2025 CERN for the benefit of the ACTS project
+ * (c) 2024-2026 CERN for the benefit of the ACTS project
  *
  * Mozilla Public License Version 2.0
  */
@@ -142,6 +142,7 @@ TEST_P(CkfCombinatoricsTelescopeTests, Run) {
     cfg_no_limit.chi2_max = 30.f;
     cfg_no_limit.max_num_branches_per_surface = 10;
     cfg_no_limit.duplicate_removal_minimum_length = 100u;
+    cfg_no_limit.run_mbf_smoother = false;
 
     traccc::sycl::combinatorial_kalman_filter_algorithm::config_type cfg_limit;
     cfg_limit.ptc_hypothesis = ptc;
@@ -149,6 +150,7 @@ TEST_P(CkfCombinatoricsTelescopeTests, Run) {
     cfg_limit.chi2_max = 30.f;
     cfg_limit.max_num_branches_per_surface = 10;
     cfg_limit.duplicate_removal_minimum_length = 100u;
+    cfg_limit.run_mbf_smoother = false;
 
     // Finding algorithm object
     traccc::sycl::combinatorial_kalman_filter_algorithm device_finding{
@@ -162,7 +164,8 @@ TEST_P(CkfCombinatoricsTelescopeTests, Run) {
         // Truth Track Candidates
         traccc::event_data evt_data(path, i_evt, host_mr);
 
-        traccc::measurement_collection_types::host truth_measurements{&host_mr};
+        traccc::edm::measurement_collection<traccc::default_algebra>::host
+            truth_measurements{host_mr};
         traccc::edm::track_container<traccc::default_algebra>::host
             truth_track_candidates{host_mr};
         evt_data.generate_truth_candidates(truth_track_candidates,
@@ -187,13 +190,15 @@ TEST_P(CkfCombinatoricsTelescopeTests, Run) {
             ->wait();
 
         // Read measurements
-        traccc::measurement_collection_types::host measurements_per_event{
-            &host_mr};
+        traccc::edm::measurement_collection<traccc::default_algebra>::host
+            measurements_per_event{host_mr};
         traccc::io::read_measurements(measurements_per_event, i_evt,
                                       path.native());
 
-        traccc::measurement_collection_types::buffer measurements_buffer(
-            static_cast<unsigned int>(measurements_per_event.size()), mr.main);
+        traccc::edm::measurement_collection<traccc::default_algebra>::buffer
+            measurements_buffer(
+                static_cast<unsigned int>(measurements_per_event.size()),
+                mr.main);
         copy.setup(measurements_buffer)->wait();
         copy(vecmem::get_data(measurements_per_event), measurements_buffer)
             ->wait();

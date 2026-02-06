@@ -126,13 +126,16 @@ TEST_P(KalmanFittingHoleCountTests, Run) {
     // Fitting algorithm object
     traccc::fitting_config fit_cfg;
     fit_cfg.ptc_hypothesis = ptc;
+    fit_cfg.min_p = 10.f * traccc::unit<float>::MeV;
+    fit_cfg.min_pT = 60.f * traccc::unit<float>::MeV;
     traccc::host::kalman_fitting_algorithm fitting(fit_cfg, host_mr, copy);
 
     // Event map
     traccc::event_data evt_data(path, 0u, host_mr);
 
     // Truth Track Candidates
-    traccc::measurement_collection_types::host measurements(&host_mr);
+    traccc::edm::measurement_collection<traccc::default_algebra>::host
+        measurements(host_mr);
     traccc::edm::track_container<traccc::default_algebra>::host
         track_candidates{host_mr};
     evt_data.generate_truth_candidates(track_candidates, measurements, sg,

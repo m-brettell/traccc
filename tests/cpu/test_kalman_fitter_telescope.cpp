@@ -127,6 +127,7 @@ TEST_P(KalmanFittingTelescopeTests, Run) {
     // Fitting algorithm object
     traccc::fitting_config fit_cfg;
     fit_cfg.ptc_hypothesis = ptc;
+    fit_cfg.min_pT = 100.f * traccc::unit<float>::MeV;
     traccc::host::kalman_fitting_algorithm fitting(fit_cfg, host_mr, copy);
 
     // Iterate over events
@@ -135,7 +136,8 @@ TEST_P(KalmanFittingTelescopeTests, Run) {
         // Event map
         traccc::event_data evt_data(path, i_evt, host_mr);
         // Truth Track Candidates
-        traccc::measurement_collection_types::host measurements(&host_mr);
+        traccc::edm::measurement_collection<traccc::default_algebra>::host
+            measurements(host_mr);
         traccc::edm::track_container<traccc::default_algebra>::host
             track_candidates{host_mr};
         evt_data.generate_truth_candidates(track_candidates, measurements, sg,

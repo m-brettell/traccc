@@ -13,7 +13,7 @@
 #include "traccc/utils/messaging.hpp"
 
 // Project include(s).
-#include "traccc/edm/measurement.hpp"
+#include "traccc/edm/measurement_collection.hpp"
 #include "traccc/edm/particle.hpp"
 #include "traccc/edm/track_collection.hpp"
 #include "traccc/edm/track_parameters.hpp"
@@ -65,7 +65,8 @@ class fitting_performance_writer : public messaging {
                    traccc::default_algebra>::host::proxy_type track,
                const edm::track_state_collection<traccc::default_algebra>::host&
                    track_states,
-               const measurement_collection_types::host& measurements,
+               const edm::measurement_collection<traccc::default_algebra>::host&
+                   measurements,
                const detector_t& det, event_data& evt_data,
                const detector_t::geometry_context& ctx = {}) {
 
@@ -86,20 +87,23 @@ class fitting_performance_writer : public messaging {
                              return track_states.at(link.index).is_smoothed();
                          })
                 ->index;
-        const auto trk_state = track_states.at(trk_state_idx);
+        const edm::track_state trk_state = track_states.at(trk_state_idx);
         assert(!trk_state.is_hole());
         assert(trk_state.is_smoothed());
 
         bool use_found = !evt_data.m_found_meas_to_ptc_map.empty();
 
-        const std::map<measurement, std::map<particle, std::size_t>>&
-            meas_to_ptc_map = use_found ? evt_data.m_found_meas_to_ptc_map
-                                        : evt_data.m_meas_to_ptc_map;
-        const std::map<measurement, std::pair<point3, point3>>&
-            meas_to_param_map = use_found ? evt_data.m_found_meas_to_param_map
-                                          : evt_data.m_meas_to_param_map;
+        const std::map<event_data::measurement_proxy,
+                       std::map<particle, std::size_t>>& meas_to_ptc_map =
+            use_found ? evt_data.m_found_meas_to_ptc_map
+                      : evt_data.m_meas_to_ptc_map;
+        const std::map<event_data::measurement_proxy,
+                       std::pair<point3, point3>>& meas_to_param_map =
+            use_found ? evt_data.m_found_meas_to_param_map
+                      : evt_data.m_meas_to_param_map;
 
-        const measurement meas = measurements.at(trk_state.measurement_index());
+        const edm::measurement meas =
+            measurements.at(trk_state.measurement_index());
 
         // Find the contributing particle
         // @todo: Use identify_contributing_particles function
@@ -109,11 +113,11 @@ class fitting_performance_writer : public messaging {
         const particle ptc = contributing_particles.begin()->first;
 
         // Find the truth global position and momentum
-        const auto global_pos = meas_to_param_map.at(meas).first;
-        const auto global_mom = meas_to_param_map.at(meas).second;
+        const point3 global_pos = meas_to_param_map.at(meas).first;
+        const vector3 global_mom = meas_to_param_map.at(meas).second;
 
-        const detray::tracking_surface sf{det, meas.surface_link};
-        const auto truth_bound =
+        const detray::tracking_surface sf{det, meas.surface_link()};
+        const point2 truth_bound =
             sf.global_to_bound(ctx, global_pos, vector::normalize(global_mom));
 
         // Return value
@@ -145,7 +149,7 @@ class fitting_performance_writer : public messaging {
             track,
         const edm::track_state_collection<traccc::default_algebra>::host&
             track_states,
-        const measurement_collection_types::host& measurements);
+        const edm::measurement_collection<default_algebra>::host& measurements);
 
     /// Configuration for the tool
     config m_cfg;

@@ -7,6 +7,7 @@
 
 // Project include(s).
 #include "../common/make_magnetic_field.hpp"
+#include "../common/print_fitted_tracks_statistics.hpp"
 #include "traccc/definitions/common.hpp"
 #include "traccc/definitions/primitives.hpp"
 #include "traccc/geometry/detector.hpp"
@@ -129,7 +130,9 @@ int seq_run(const traccc::opts::track_seeding& seeding_opts,
     traccc::host::seeding_algorithm sa(
         seedfinder_config, spacepoint_grid_config, seedfilter_config, host_mr,
         logger().clone("SeedingAlg"));
-    traccc::host::track_params_estimation tp(host_mr,
+    traccc::track_params_estimation_config track_params_estimation_config;
+    traccc::host::track_params_estimation tp(track_params_estimation_config,
+                                             host_mr,
                                              logger().clone("TrackParEstAlg"));
 
     // Propagation configuration
@@ -160,13 +163,13 @@ int seq_run(const traccc::opts::track_seeding& seeding_opts,
          event < input_opts.events + input_opts.skip; ++event) {
 
         // Read the hits from the relevant event file
-        traccc::measurement_collection_types::host measurements_per_event{
-            &host_mr};
+        traccc::edm::measurement_collection<traccc::default_algebra>::host
+            measurements_per_event{host_mr};
         traccc::edm::spacepoint_collection::host spacepoints_per_event{host_mr};
         traccc::io::read_spacepoints(
             spacepoints_per_event, measurements_per_event, event,
             input_opts.directory,
-            (input_opts.use_acts_geom_source ? &detector : nullptr),
+            (input_opts.use_acts_geom_source ? &detector : nullptr), nullptr,
             input_opts.format);
         n_measurements += measurements_per_event.size();
         n_spacepoints += spacepoints_per_event.size();
@@ -198,10 +201,11 @@ int seq_run(const traccc::opts::track_seeding& seeding_opts,
            Ambiguity Resolution with Greedy Solver
           -----------------------------------------*/
 
-        auto track_candidates_ar = host_ambiguity_resolution(
+        // TODO: Fix me
+        /*auto track_candidates_ar = host_ambiguity_resolution(
             traccc::edm::track_container<default_algebra>::const_data(
                 track_candidates));
-        n_ambiguity_free_tracks += track_candidates_ar.tracks.size();
+        n_ambiguity_free_tracks += track_candidates_ar.tracks.size();*/
 
         /*------------------------
            Track Fitting with KF
@@ -210,13 +214,14 @@ int seq_run(const traccc::opts::track_seeding& seeding_opts,
         auto track_states = host_fitting(
             detector, field,
             traccc::edm::track_container<default_algebra>::const_data(
-                track_candidates_ar));
+                track_candidates));
         n_fitted_tracks += track_states.tracks.size();
 
         /*------------
            Statistics
           ------------*/
 
+        details::print_fitted_tracks_statistics(track_states, logger());
         n_spacepoints += spacepoints_per_event.size();
         n_seeds += seeds.size();
 
@@ -240,10 +245,10 @@ int seq_run(const traccc::opts::track_seeding& seeding_opts,
                     traccc::default_algebra>::const_data(track_candidates),
                 evt_data);
 
-            ar_performance_writer.write(
+            /*ar_performance_writer.write(
                 traccc::edm::track_container<
                     traccc::default_algebra>::const_data(track_candidates_ar),
-                evt_data);
+                evt_data);*/
 
             for (unsigned int i = 0; i < track_states.tracks.size(); i++) {
                 host_detector_visitor<detector_type_list>(

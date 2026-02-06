@@ -121,7 +121,8 @@ TEST_P(CompareWithActsSeedingTests, Run) {
 
     // Read the hits from the relevant event file
     traccc::edm::spacepoint_collection::host spacepoints_per_event{host_mr};
-    traccc::measurement_collection_types::host measurements_per_event{&host_mr};
+    traccc::edm::measurement_collection<traccc::default_algebra>::host
+        measurements_per_event{host_mr};
     traccc::io::read_spacepoints(spacepoints_per_event, measurements_per_event,
                                  event, hits_dir);
 
@@ -172,8 +173,7 @@ TEST_P(CompareWithActsSeedingTests, Run) {
 
     // Start creating the seed finder object. It needs a Config option
     seedfinderconfig_t acts_config;
-    acts_config.seedFilter =
-        std::make_shared<seedfilter_t>(sfconf.toInternalUnits(), &atlasCuts);
+    acts_config.seedFilter = std::make_shared<seedfilter_t>(sfconf, &atlasCuts);
     // Phi range go from -pi to +pi
     acts_config.phiMin = traccc_config.phiMin;
     acts_config.phiMax = traccc_config.phiMax;
@@ -212,15 +212,14 @@ TEST_P(CompareWithActsSeedingTests, Run) {
     acts_config.sigmaError = traccc_config.sigmaError;
     acts_config.useDetailedDoubleMeasurementInfo = false;
     // there are other variables here actualy ...
-    acts_config = acts_config.toInternalUnits().calculateDerivedQuantities();
+    acts_config = acts_config.calculateDerivedQuantities();
 
     // We create also a Seed Finder Option object
     Acts::SeedFinderOptions acts_options;
     acts_options.bFieldInZ = traccc_config.bFieldInZ;
     acts_options.beamPos[0] = traccc_config.beamPos[0];
     acts_options.beamPos[1] = traccc_config.beamPos[1];
-    acts_options =
-        acts_options.toInternalUnits().calculateDerivedQuantities(acts_config);
+    acts_options = acts_options.calculateDerivedQuantities(acts_config);
 
     // Create the grid. This is using a CylindricalSpacePointGrid which is
     // a 3D grid (phi, z, radius). We need to pass a config and an option
@@ -252,7 +251,7 @@ TEST_P(CompareWithActsSeedingTests, Run) {
 
     grid_t grid =
         Acts::CylindricalSpacePointGridCreator::createGrid<spacepoint_t>(
-            gridConf.toInternalUnits(), gridOpts.toInternalUnits());
+            gridConf, gridOpts);
 
     // We fill the grid with the space points
     Acts::CylindricalSpacePointGridCreator::fillGrid<spacepoint_t>(

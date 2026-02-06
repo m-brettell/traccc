@@ -151,6 +151,7 @@ TEST_P(KalmanFittingTelescopeTests, Run) {
     // Fitting algorithm object
     typename traccc::sycl::kalman_fitting_algorithm::config_type fit_cfg;
     fit_cfg.ptc_hypothesis = ptc;
+    fit_cfg.min_pT = 100.f * traccc::unit<float>::MeV;
     traccc::sycl::kalman_fitting_algorithm device_fitting(fit_cfg, mr, copy,
                                                           traccc_queue);
 
@@ -165,7 +166,8 @@ TEST_P(KalmanFittingTelescopeTests, Run) {
         traccc::event_data evt_data(path, i_evt, host_mr);
 
         // Truth Track Candidates
-        traccc::measurement_collection_types::host measurements{&host_mr};
+        traccc::edm::measurement_collection<traccc::default_algebra>::host
+            measurements{host_mr};
         traccc::edm::track_container<traccc::default_algebra>::host
             track_candidates{host_mr};
         evt_data.generate_truth_candidates(track_candidates, measurements, sg,
@@ -176,9 +178,10 @@ TEST_P(KalmanFittingTelescopeTests, Run) {
         ASSERT_EQ(track_candidates.tracks.size(), n_truth_tracks);
 
         // track candidates buffer
-        traccc::measurement_collection_types::buffer measurements_buffer =
-            copy.to(track_candidates.measurements, mr.main,
-                    vecmem::copy::type::host_to_device);
+        traccc::edm::measurement_collection<traccc::default_algebra>::buffer
+            measurements_buffer =
+                copy.to(track_candidates.measurements, mr.main, mr.host,
+                        vecmem::copy::type::host_to_device);
         traccc::edm::track_container<traccc::default_algebra>::buffer
             track_candidates_buffer{
                 copy.to(vecmem::get_data(track_candidates.tracks), mr.main,

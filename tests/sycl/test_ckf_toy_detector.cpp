@@ -140,6 +140,7 @@ TEST_P(CkfToyDetectorTests, Run) {
     cfg.max_num_branches_per_surface = 2;
     cfg.chi2_max = 10.f;
     cfg.propagation.navigation.search_window = search_window;
+    cfg.run_mbf_smoother = false;
 
     // Finding algorithm object
     traccc::host::combinatorial_kalman_filter_algorithm host_finding(cfg,
@@ -155,7 +156,8 @@ TEST_P(CkfToyDetectorTests, Run) {
         // Truth Track Candidates
         traccc::event_data evt_data(path.native(), i_evt, host_mr);
 
-        traccc::measurement_collection_types::host truth_measurements{&host_mr};
+        traccc::edm::measurement_collection<traccc::default_algebra>::host
+            truth_measurements{host_mr};
         traccc::edm::track_container<traccc::default_algebra>::host
             truth_track_candidates{host_mr};
         evt_data.generate_truth_candidates(truth_track_candidates,
@@ -180,13 +182,15 @@ TEST_P(CkfToyDetectorTests, Run) {
             ->wait();
 
         // Read measurements
-        traccc::measurement_collection_types::host measurements_per_event{
-            &host_mr};
+        traccc::edm::measurement_collection<traccc::default_algebra>::host
+            measurements_per_event{host_mr};
         traccc::io::read_measurements(measurements_per_event, i_evt,
                                       path.native());
 
-        traccc::measurement_collection_types::buffer measurements_buffer(
-            static_cast<unsigned int>(measurements_per_event.size()), mr.main);
+        traccc::edm::measurement_collection<traccc::default_algebra>::buffer
+            measurements_buffer(
+                static_cast<unsigned int>(measurements_per_event.size()),
+                mr.main);
         copy.setup(measurements_buffer)->wait();
         copy(vecmem::get_data(measurements_per_event), measurements_buffer)
             ->wait();

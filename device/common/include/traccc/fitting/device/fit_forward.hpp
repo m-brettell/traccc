@@ -34,17 +34,20 @@ TRACCC_HOST_DEVICE inline void fit_forward(
 
     fitter_t fitter(det, payload.field_data, cfg);
 
-    auto track = tracks.tracks.at(param_id);
-    auto params = track.params();
+    edm::track track = tracks.tracks.at(param_id);
+    bound_track_parameters<> params = track.params();
 
     // TODO: Merge into filter?
     inflate_covariance(params, fitter.config().covariance_inflation_factor);
 
     typename fitter_t::state fitter_state(
         track, tracks.states, tracks.measurements,
-        *(payload.barcodes_view.ptr() + param_id), fitter.config().propagation);
+        *(payload.surfaces_view.ptr() + param_id), fitter.config().propagation);
 
     kalman_fitter_status fit_status = fitter.filter(params, fitter_state);
+
+    fitter.check_fitting_result(fitter_state, fit_status,
+                                kalman_fitter_status::SUCCESS);
 
     if (fit_status != kalman_fitter_status::SUCCESS) {
         param_liveness.at(param_id) = 0u;

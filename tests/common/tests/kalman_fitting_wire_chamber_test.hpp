@@ -1,6 +1,6 @@
 /** TRACCC library, part of the ACTS project (R&D line)
  *
- * (c) 2023-2024 CERN for the benefit of the ACTS project
+ * (c) 2023-2026 CERN for the benefit of the ACTS project
  *
  * Mozilla Public License Version 2.0
  */
@@ -13,6 +13,9 @@
 
 // Detray include(s).
 #include <detray/io/frontend/detector_writer.hpp>
+
+// VecMem include(s).
+#include <vecmem/memory/host_memory_resource.hpp>
 
 // System include(s)
 #include <array>
@@ -87,10 +90,6 @@ class KalmanFittingWireChamberTests
         detray::wire_chamber_config<scalar> wire_chamber_cfg;
         wire_chamber_cfg.n_layers(n_wire_layers);
         wire_chamber_cfg.half_z(half_z);
-
-        //@NOTE: 2 GeV test fails in pull check with the following setup
-        // wire_chamber_cfg.mapped_material(detray::beryllium<scalar>());
-        // wire_chamber_cfg.m_thickness = 100.f * traccc::unit<scalar>::um;
 
         // Create telescope detector
         auto [det, name_map] = build_wire_chamber<traccc::default_algebra>(

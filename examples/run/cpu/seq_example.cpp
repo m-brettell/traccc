@@ -8,6 +8,7 @@
 // core
 #include "traccc/geometry/detector.hpp"
 #include "traccc/geometry/host_detector.hpp"
+#include "traccc/seeding/detail/track_params_estimation_config.hpp"
 #include "traccc/utils/memory_resource.hpp"
 #include "traccc/utils/propagation.hpp"
 
@@ -23,6 +24,7 @@
 #include "traccc/clusterization/clusterization_algorithm.hpp"
 #include "traccc/finding/combinatorial_kalman_filter_algorithm.hpp"
 #include "traccc/fitting/kalman_fitting_algorithm.hpp"
+#include "traccc/fitting/triplet_fitting_algorithm.hpp"
 #include "traccc/seeding/seeding_algorithm.hpp"
 #include "traccc/seeding/silicon_pixel_spacepoint_formation_algorithm.hpp"
 #include "traccc/seeding/track_params_estimation.hpp"
@@ -148,7 +150,9 @@ int seq_run(const traccc::opts::input_data& input_opts,
     traccc::host::seeding_algorithm sa(
         seedfinder_config, spacepoint_grid_config, seedfilter_config, host_mr,
         logger().clone("SeedingAlg"));
-    traccc::host::track_params_estimation tp(host_mr,
+    traccc::track_params_estimation_config track_params_estimation_config;
+    traccc::host::track_params_estimation tp(track_params_estimation_config,
+                                             host_mr,
                                              logger().clone("TrackParEstAlg"));
 
     finding_algorithm finding_alg(finding_cfg, host_mr,
@@ -189,7 +193,7 @@ int seq_run(const traccc::opts::input_data& input_opts,
         traccc::host::sparse_ccl_algorithm::output_type clusters_per_event{
             host_mr};
         traccc::host::measurement_creation_algorithm::output_type
-            measurements_per_event{&host_mr};
+            measurements_per_event{host_mr};
         spacepoint_formation_algorithm::output_type spacepoints_per_event{
             host_mr};
         traccc::host::seeding_algorithm::output_type seeds{host_mr};

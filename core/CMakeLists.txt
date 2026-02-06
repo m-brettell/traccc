@@ -20,7 +20,8 @@ traccc_add_library( traccc_core core TYPE SHARED
   "include/traccc/edm/details/container_element.hpp"
   "include/traccc/edm/details/device_container.hpp"
   "include/traccc/edm/details/host_container.hpp"
-  "include/traccc/edm/measurement.hpp"
+  "include/traccc/edm/measurement_collection.hpp"
+  "include/traccc/edm/impl/measurement_collection.ipp"
   "include/traccc/edm/measurement_helpers.hpp"
   "include/traccc/edm/impl/measurement_helpers.ipp"
   "include/traccc/edm/particle.hpp"
@@ -96,7 +97,10 @@ traccc_add_library( traccc_core core TYPE SHARED
   "include/traccc/fitting/details/kalman_fitting_types.hpp"
   "include/traccc/fitting/details/kalman_fitting.hpp"
   "include/traccc/fitting/kalman_fitting_algorithm.hpp"
+  "include/traccc/fitting/triplet_fit/triplet_fitter.hpp"
+  "include/traccc/fitting/triplet_fitting_algorithm.hpp"
   "src/fitting/kalman_fitting_algorithm.cpp"
+  "src/fitting/triplet_fitting_algorithm.cpp"
   # Seed finding algorithmic code.
   "include/traccc/seeding/detail/lin_circle.hpp"
   "include/traccc/seeding/detail/doublet.hpp"
@@ -147,3 +151,17 @@ target_compile_definitions( traccc_core
 # Set the algebra-plugins plugin to use.
 message(STATUS "Building with plugin type: " ${TRACCC_ALGEBRA_PLUGINS})
 target_compile_definitions(traccc_core PUBLIC ALGEBRA_PLUGINS_INCLUDE_${TRACCC_ALGEBRA_PLUGINS})
+
+string(REPLACE ";" ", " TRACCC_DETECTOR_TYPES "${TRACCC_SUPPORTED_DETECTORS}")
+message(STATUS "Building with detector types: ${TRACCC_DETECTOR_TYPES}")
+configure_file(
+  "${CMAKE_CURRENT_SOURCE_DIR}/include/traccc/geometry/detector_type_list.hpp.in"
+  "${CMAKE_CURRENT_BINARY_DIR}${CMAKE_FILES_DIRECTORY}/include/traccc/geometry/detector_type_list.hpp"
+  @ONLY)
+
+target_include_directories(traccc_core
+  PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_BINARY_DIR}${CMAKE_FILES_DIRECTORY}/include> )
+
+install(
+  DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}${CMAKE_FILES_DIRECTORY}/include/"
+  DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}" )
