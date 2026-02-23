@@ -34,6 +34,7 @@ using channel_id = unsigned int;
 
 // Default algebra type
 using default_algebra = ALGEBRA_PLUGIN<traccc::scalar>;
+using double_algebra = ALGEBRA_PLUGIN<double>;
 
 using scalar = detray::dscalar<default_algebra>;
 using point2 = detray::dpoint2D<default_algebra>;

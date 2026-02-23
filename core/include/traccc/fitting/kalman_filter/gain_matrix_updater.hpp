@@ -17,6 +17,7 @@
 #include "traccc/fitting/status_codes.hpp"
 #include "traccc/utils/logging.hpp"
 #include "traccc/utils/subspace.hpp"
+#include "traccc/definitions/primitives.hpp"
 
 namespace traccc {
 
@@ -27,9 +28,9 @@ struct gain_matrix_updater {
     // Type declarations
     using size_type = detray::dsize_type<algebra_t>;
     template <size_type ROWS, size_type COLS>
-    using matrix_type = detray::dmatrix<algebra_t, ROWS, COLS>;
-    using bound_vector_type = traccc::bound_vector<algebra_t>;
-    using bound_matrix_type = traccc::bound_matrix<algebra_t>;
+    using matrix_type = detray::dmatrix<double_algebra, ROWS, COLS>;
+    using bound_vector_type = traccc::bound_vector<double_algebra>;
+    using bound_matrix_type = traccc::bound_matrix<double_algebra>;
 
     /// Gain matrix updater operation
     ///
@@ -70,7 +71,7 @@ struct gain_matrix_updater {
 
         // Measurement data on surface
         matrix_type<D, 1> meas_local;
-        edm::get_measurement_local<algebra_t>(
+        edm::get_measurement_local<double_algebra>(
             measurements.at(trk_state.measurement_index()), meas_local);
 
         assert((dim > 1) || (getter::element(meas_local, 1u, 0u) == 0.f));
@@ -78,12 +79,19 @@ struct gain_matrix_updater {
         TRACCC_DEBUG_HOST("Predicted param.: " << bound_params);
 
         // Predicted vector of bound track parameters
-        const bound_vector_type& predicted_vec = bound_params.vector();
-
+        bound_vector_type predicted_vec = {};
+				for(unsigned int i=0;i<e_bound_size;++i) {
+					predicted_vec[0][i] = static_cast<double>(bound_params.vector()[0][i]);
+				}
         // Predicted covaraince of bound track parameters
-        const bound_matrix_type& predicted_cov = bound_params.covariance();
+        bound_matrix_type predicted_cov = {};
+				for(unsigned int i=0;i<e_bound_size;++i) {
+					for(unsigned int j=0;j<e_bound_size;++j) {
+						predicted_cov[i][j] = static_cast<double>(bound_params.covariance()[i][j]);
+					}
+				}
 
-        const subspace<algebra_t, e_bound_size> subs(
+        const subspace<double_algebra, e_bound_size> subs(
             measurements.at(trk_state.measurement_index()).subspace());
         matrix_type<D, e_bound_size> H = subs.template projector<D>();
 
@@ -101,7 +109,7 @@ struct gain_matrix_updater {
 
         // Spatial resolution (Measurement covariance)
         matrix_type<D, D> V;
-        edm::get_measurement_covariance<algebra_t>(
+        edm::get_measurement_covariance<double_algebra>(
             measurements.at(trk_state.measurement_index()), V);
         // @TODO: Fix properly
         if (/*dim == 1*/ getter::element(meas_local, 1u, 0u) == 0.f) {
@@ -139,7 +147,7 @@ struct gain_matrix_updater {
         // Check the covariance for consistency
         // @TODO: Need to understand why negative variance happens
         if (constexpr traccc::scalar min_var{-0.01f};
-            !details::regularize_covariance<algebra_t>(filtered_cov, min_var)) {
+            !details::regularize_covariance<double_algebra>(filtered_cov, min_var)) {
             TRACCC_ERROR_HOST_DEVICE("Negative variance after filtering");
             return kalman_fitter_status::ERROR_UPDATER_INVALID_COVARIANCE;
         }
@@ -173,7 +181,7 @@ struct gain_matrix_updater {
                 residual, matrix::inverse(R)) *
             residual;
 
-        const scalar chi2_val{getter::element(chi2, 0, 0)};
+        const scalar chi2_val = static_cast<double>(getter::element(chi2, 0, 0));
 
         TRACCC_VERBOSE_HOST("Filtered residual: " << residual);
         TRACCC_DEBUG_HOST("R:\n" << R);
@@ -192,9 +200,13 @@ struct gain_matrix_updater {
         }
 
         // Set the chi2 for this track and measurement
-        trk_state.filtered_params().set_vector(filtered_vec);
-        trk_state.filtered_params().set_covariance(filtered_cov);
-        trk_state.filtered_chi2() = chi2_val;
+				for(unsigned int i=0;i<e_bound_size;++i) {
+					trk_state.filtered_params().vector()[0][i] = static_cast<scalar>(filtered_vec[0][i]);
+					for(unsigned int j=0;j<e_bound_size;++j) {
+						trk_state.filtered_params().covariance()[i][j] = static_cast<scalar>(filtered_cov[i][j]);
+					}
+				}
+				trk_state.filtered_chi2() = chi2_val;
 
         if (math::fmod(trk_state.filtered_params().theta(),
                        2.f * constant<traccc::scalar>::pi) == 0.f) {
