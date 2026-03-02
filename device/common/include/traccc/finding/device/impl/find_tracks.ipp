@@ -133,7 +133,6 @@ TRACCC_HOST_DEVICE inline void find_tracks(
      * the pool.
      */
     unsigned int curr_meas = 0;
-
     /*
      * This loop keeps running until all threads have processed all of their
      * measurements.
@@ -220,9 +219,9 @@ TRACCC_HOST_DEVICE inline void find_tracks(
 
                 // Run the Kalman update
                 const kalman_fitter_status res =
-                    gain_matrix_updater<typename detector_t::algebra_type>{}(
+                    dp_gain_matrix_updater<typename detector_t::algebra_type>{}(
                         trk_state, measurements, in_par, is_line);
-
+								
                 TRACCC_DEBUG_DEVICE("KF status: %d", res);
 
                 /*
@@ -536,8 +535,8 @@ TRACCC_HOST_DEVICE inline void find_tracks(
 
     const bool in_param_is_live = in_param_id < payload.n_in_params &&
                                   in_params_liveness.at(in_param_id) > 0u;
-
-    if (in_param_is_live) {
+    
+		if (in_param_is_live) {
         prev_link_idx = payload.prev_links_idx + in_param_id;
         seed_idx =
             payload.step > 0 ? links.at(prev_link_idx).seed_idx : in_param_id;
@@ -612,7 +611,7 @@ TRACCC_HOST_DEVICE inline void find_tracks(
 
         if (local_num_params == 0) {
             assert(params_to_add <= 1);
-
+						//MARK
             if (in_param_can_create_hole && params_to_add == 1) {
                 const unsigned int out_offset =
                     shared_payload.shared_out_offset + local_out_offset;
@@ -702,7 +701,7 @@ TRACCC_HOST_DEVICE inline void find_tracks(
                 if (last_step &&
                     n_cands >= cfg.min_track_candidates_per_track) {
                     TRACCC_ERROR_DEVICE("Create tip: Max no. candidates");
-                    auto tip_pos = tips.push_back(out_offset);
+										auto tip_pos = tips.push_back(out_offset);
                     tip_lengths.at(tip_pos) = n_cands;
                 }
             }
