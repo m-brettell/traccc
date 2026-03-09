@@ -131,16 +131,16 @@ __global__ static void CCA_IterationKernel(
                 if (next_level == 1 + d_levels[nextEdgeIdx]) {
                     // calculate the #d_state_store nodes for segment extraction
                     // starting at this edge
-										if(d_outgoing_paths[nextEdgeIdx].x < 0) {
-											printf("neg oE %i nei %i",  d_outgoing_paths[nextEdgeIdx].x, d_output_graph[edge_pos + traccc::device::gbts_consts::nNei]);
-										}
+										//if(d_outgoing_paths[nextEdgeIdx].x < 0) {
+										//	printf("neg oE %i nei %i",  d_outgoing_paths[nextEdgeIdx].x, d_output_graph[edge_pos + traccc::device::gbts_consts::nNei]);
+										//}
                     out_paths += 1 + d_outgoing_paths[nextEdgeIdx].x;
                 }
                 // flag as not terminus edge
                 d_outgoing_paths[nextEdgeIdx].y = -1;
             }
             // flag as long enough segement to become a seed
-						if(out_paths < 0) {printf(" neg %i ", out_paths); out_paths = 1;}
+						if(out_paths < 0) {/*printf(" neg %i ", out_paths);*/ out_paths = 1;}
             d_outgoing_paths[edgeIdx] =
                 make_short2(out_paths, (next_level >= minLevel) - 1);
         }
@@ -153,7 +153,7 @@ __global__ static void CCA_IterationKernel(
     if (threadIdx.x == 0) {
         if (atomicAdd(&d_counters[5], 1) == gridDim.x - 1) {
             // this is the last block
-						printf(" ITER %i ",iter);
+						//printf(" ITER %i ",iter);
             d_counters[3 + toggle] = 0;
             d_counters[5] = 0;
         }
