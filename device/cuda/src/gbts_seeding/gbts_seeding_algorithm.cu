@@ -807,9 +807,9 @@ gbts_seeding_algorithm::output_type gbts_seeding_algorithm::operator()(
     nBlocks = 1 + (path_sizes[0] + path_sizes[1] - 1) / nThreads;
 		//TESTING
 		//unsigned int nP = path_sizes[0]+path_sizes[1];
-		unsigned int p2[2] = {0,0};
-		cudaMemcpyAsync(&p2, &ctx.d_counters[6], 2 * sizeof(unsigned int),
-                    cudaMemcpyDeviceToHost, stream);
+		//unsigned int p2[2] = {0,0};
+		//cudaMemcpyAsync(&p2, &ctx.d_counters[6], 2 * sizeof(unsigned int),
+    //                cudaMemcpyDeviceToHost, stream);
 		//if(nP != p2[1]) printf("BAAD");
     //TRACCC_INFO(p2[0] << " POST size of path store | nTerminusEdges "
     //                           << p2[1]);

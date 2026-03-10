@@ -292,7 +292,7 @@ void __global__ fill_path_store(int2* d_path_store, int* d_output_graph,
                     continue;
                 }
                 path_idx = atomicAdd(&d_counters[7], 1);
-								if(path_idx == d_counters[6]+nTerminus) {printf("maxhit"); continue;}
+								if(path_idx >= d_counters[6]+nTerminus) {/*printf("maxhit");*/ continue;}
                 int live_idx = atomicAdd(&n_live_paths, 1);
                 if (live_idx >= traccc::device::gbts_consts::live_path_buffer) {
                     break;
