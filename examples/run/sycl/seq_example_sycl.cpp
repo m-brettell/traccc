@@ -106,20 +106,7 @@ int seq_run(const traccc::opts::detector& detector_opts,
     traccc::detector_conditions_description::data host_det_cond_data{
         vecmem::get_data(host_det_cond)};
     traccc::detector_design_description::buffer device_det_descr{
-        [&]() {
-            // number of elements in the detector design description
-            std::vector<unsigned int> sizes(host_det_descr.size());
-            for (std::size_t i = 0; i < host_det_descr.size(); ++i) {
-                auto this_design = host_det_descr.at(i);
-                // now for each element, set the size to the largest size of
-                // that element across all modules
-                sizes[i] = std::max(static_cast<unsigned int>(
-                                        ((this_design.bin_edges_x()).size())),
-                                    static_cast<unsigned int>(
-                                        ((this_design.bin_edges_y()).size())));
-            }
-            return sizes;
-        }(),
+        vecmem::edm::get_capacities(vecmem::get_data(host_det_descr)),
         device_mr, &host_mr, vecmem::data::buffer_type::resizable};
     copy.setup(device_det_descr)->wait();
     copy(host_det_descr_data, device_det_descr)->wait();
@@ -219,8 +206,7 @@ int seq_run(const traccc::opts::detector& detector_opts,
             track_candidates{host_mr};
 
         // Instantiate SYCL containers/collections
-        traccc::edm::measurement_collection<traccc::default_algebra>::buffer
-            measurements_sycl_buffer;
+        traccc::edm::measurement_collection::buffer measurements_sycl_buffer;
         traccc::sycl::silicon_pixel_spacepoint_formation_algorithm::output_type
             spacepoints_sycl_buffer;
         traccc::sycl::triplet_seeding_algorithm::output_type seeds_sycl_buffer;
@@ -349,8 +335,8 @@ int seq_run(const traccc::opts::detector& detector_opts,
           compare cpu and sycl result
           ----------------------------------*/
 
-        traccc::edm::measurement_collection<traccc::default_algebra>::host
-            measurements_per_event_sycl{host_mr};
+        traccc::edm::measurement_collection::host measurements_per_event_sycl{
+            host_mr};
         traccc::edm::spacepoint_collection::host spacepoints_per_event_sycl{
             host_mr};
         traccc::edm::seed_collection::host seeds_sycl{host_mr};
@@ -373,8 +359,7 @@ int seq_run(const traccc::opts::detector& detector_opts,
             TRACCC_INFO("===>>> Event " << event << " <<<===");
 
             // Compare the measurements made on the host and on the device.
-            traccc::soa_comparator<
-                traccc::edm::measurement_collection<traccc::default_algebra>>
+            traccc::soa_comparator<traccc::edm::measurement_collection>
                 compare_measurements{"measurements"};
             compare_measurements(vecmem::get_data(measurements_per_event),
                                  vecmem::get_data(measurements_per_event_sycl));

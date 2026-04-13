@@ -1,6 +1,6 @@
 /** TRACCC library, part of the ACTS project (R&D line)
  *
- * (c) 2025 CERN for the benefit of the ACTS project
+ * (c) 2025-2026 CERN for the benefit of the ACTS project
  *
  * Mozilla Public License Version 2.0
  */
@@ -25,16 +25,15 @@ namespace traccc::cuda::kernels {
 
 __global__ void count_sp_by_layer(
     const traccc::edm::spacepoint_collection::const_view spacepoints_view,
-    const edm::measurement_collection<default_algebra>::const_view
-        measurements_view,
+    const edm::measurement_collection::const_view measurements_view,
     const short* volumeToLayerMap, const uint2* surfaceToLayerMap,
     const char* d_layerType, float4* reducedSP, int* d_layerCounts,
     short* spacepointsLayer, const float type1_max_width,
     const unsigned int nSp, const long unsigned int volumeMapSize,
     const long unsigned int surfaceMapSize, bool doTauCut = true) {
 
-    const edm::measurement_collection<default_algebra>::const_device
-        measurements(measurements_view);
+    const edm::measurement_collection::const_device measurements(
+        measurements_view);
     const traccc::edm::spacepoint_collection::const_device spacepoints(
         spacepoints_view);
 
@@ -282,9 +281,9 @@ __global__ void eta_phi_prefix_sum_kernel(const int* d_eta_node_counter,
 __global__ void node_sorting_kernel(
     const float4* d_sp_params, const int* d_node_eta_index,
     const int* d_node_phi_index, int* d_phi_cusums, float* d_node_params,
-    int* d_node_index, int* d_original_sp_idx, const gbts_algo_params* ap,
-    const unsigned int nNodesPerBlock, const unsigned int nNodes,
-    const unsigned int nPhiBins) {
+    int* d_node_index, int* d_original_sp_idx,
+    const gbts_graph_building_params* ap, const unsigned int nNodesPerBlock,
+    const unsigned int nNodes, const unsigned int nPhiBins) {
 
     int begin_node = blockIdx.x * nNodesPerBlock;
 

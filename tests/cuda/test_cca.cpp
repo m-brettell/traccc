@@ -1,6 +1,6 @@
 /** TRACCC library, part of the ACTS project (R&D line)
  *
- * (c) 2022-2024 CERN for the benefit of the ACTS project
+ * (c) 2022-2026 CERN for the benefit of the ACTS project
  *
  * Mozilla Public License Version 2.0
  */
@@ -27,11 +27,9 @@ cca_function_t get_f_with(traccc::clustering_config cfg) {
                  const traccc::detector_design_description::host& det_desc,
                  const traccc::detector_conditions_description::host& det_cond)
                -> std::pair<std::map<traccc::geometry_id,
-                                     traccc::edm::measurement_collection<
-                                         traccc::default_algebra>::host>,
+                                     traccc::edm::measurement_collection::host>,
                             traccc::edm::silicon_cluster_collection::host> {
-        std::map<traccc::geometry_id, traccc::edm::measurement_collection<
-                                          traccc::default_algebra>::host>
+        std::map<traccc::geometry_id, traccc::edm::measurement_collection::host>
             geom_to_meas_map;
 
         traccc::cuda::stream stream;
@@ -42,21 +40,8 @@ cca_function_t get_f_with(traccc::clustering_config cfg) {
                                                   stream, cfg);
 
         traccc::detector_design_description::buffer det_descr_buffer{
-            [&]() {
-                std::vector<unsigned int> sizes(det_desc.size());
-                for (std::size_t i = 0; i < det_desc.size(); ++i) {
-                    auto this_design = det_desc.at(i);
-                    // now for each element, set the size to the largest size of
-                    // that element across all modules
-                    sizes[i] =
-                        std::max(static_cast<unsigned int>(
-                                     ((this_design.bin_edges_x()).size())),
-                                 static_cast<unsigned int>(
-                                     ((this_design.bin_edges_y()).size())));
-                }
-                return sizes;
-            }(),
-            device_mr, &host_mr, vecmem::data::buffer_type::fixed_size};
+            vecmem::edm::get_capacities(vecmem::get_data(det_desc)), device_mr,
+            &host_mr, vecmem::data::buffer_type::fixed_size};
         copy.setup(det_descr_buffer)->wait();
         copy(vecmem::get_data(det_desc), det_descr_buffer)->wait();
         traccc::detector_conditions_description::buffer det_cond_buffer{
@@ -79,8 +64,7 @@ cca_function_t get_f_with(traccc::clustering_config cfg) {
         auto [measurements_buffer, cluster_buffer] =
             cc(cells_buffer, det_descr_buffer, det_cond_buffer,
                traccc::device::clustering_keep_disjoint_set{});
-        traccc::edm::measurement_collection<traccc::default_algebra>::host
-            measurements{host_mr};
+        traccc::edm::measurement_collection::host measurements{host_mr};
         copy(measurements_buffer, measurements)->wait();
 
         traccc::edm::silicon_cluster_collection::host clusters{host_mr};
@@ -91,8 +75,7 @@ cca_function_t get_f_with(traccc::clustering_config cfg) {
                     measurements.at(i).surface_link().value()) == false) {
                 geom_to_meas_map.insert(
                     {measurements.at(i).surface_link().value(),
-                     traccc::edm::measurement_collection<
-                         traccc::default_algebra>::host{host_mr}});
+                     traccc::edm::measurement_collection::host{host_mr}});
             }
             geom_to_meas_map.at(measurements.at(i).surface_link().value())
                 .push_back(measurements.at(i));
