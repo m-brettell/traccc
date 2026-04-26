@@ -79,7 +79,7 @@ struct gbts_ctx {
 
     // GraphMaking
     int2* d_edge_nodes{};
-    kernels::half4* d_edge_params{};
+    kernels::edge_params* d_edge_params{};
 
     int* d_num_incoming_edges{};
     int* d_edge_links{};
@@ -508,6 +508,10 @@ gbts_seeding_algorithm::output_type gbts_seeding_algorithm::operator()(
         ctx.h_bin_pair_views[3 + offset] =
             ctx.h_eta_bin_views[2 * binPair.second + 1];
         ctx.h_bin_pair_dphi[pairIdx] = deltaPhi;
+		// long links in or from the barrel
+		//unsigned int nBarrelBins = m_config.layerInfo[4].first + m_config.layerInfo[4].second;
+		//bool expand_cuts =  binPair.first < nBarrelBins & abs(maxDeltaR > 90);
+		//ctx.h_bin_pair_expand_match_cuts[pairIdx] = expand_cuts;
         pairIdx++;
     }
     ctx.nUsedBinPairs = pairIdx;
@@ -535,7 +539,7 @@ gbts_seeding_algorithm::output_type gbts_seeding_algorithm::operator()(
 
     // 2. Find edges between spacepoint pairs
     ctx.nMaxEdges = m_config.max_edges_factor * ctx.nNodes;
-    cudaMalloc(&ctx.d_edge_params, sizeof(kernels::half4) * ctx.nMaxEdges);
+    cudaMalloc(&ctx.d_edge_params, sizeof(kernels::edge_params) * ctx.nMaxEdges);
     cudaMalloc(&ctx.d_edge_nodes, sizeof(int2) * ctx.nMaxEdges);
 
     cudaMalloc(&ctx.d_num_incoming_edges, sizeof(int) * (ctx.nNodes + 1));

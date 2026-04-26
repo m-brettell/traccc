@@ -19,25 +19,28 @@
 
 namespace traccc::cuda::kernels {
 
-struct __align__(8) half4 {
-    __half x, y, z, w;
+struct __align__(8) edge_params {
+	short eta;
+	short curv;
+	short phi1;
+	// the last bit of phi is use to toggle expand_cuts
+	short phi2;
 };
 
-inline __device__ __host__ half4 make_half4(const __half x, const __half y,
-                                            const __half z, const __half w) {
-    half4 t;
-    t.x = x;
-    t.y = y;
-    t.z = z;
-    t.w = w;
-    return t;
+inline __device__ __host__ edge_params make_edge_params(const float eta, const float curv , const float phi1, const float phi2, const short expand_cuts) {
+    edge_params ep;
+	ep.eta  = static_cast<short>(eta*(SHRT_MAX/6.2f));
+	ep.curv = static_cast<short>((curv*1e4f)*(SHRT_MAX/4.0f));
+	ep.phi1 = static_cast<short>(phi1*(SHRT_MAX/3.2f));
+	ep.phi2 = static_cast<short>((static_cast<short>(phi2*(SHRT_MAX/3.2f)) & 0xFFFE)) + expand_cuts;
+	return ep;
 }
 
 __global__ static void graphEdgeMakingKernel(
     const uint4* d_bin_pair_views, const float* d_bin_pair_dphi,
     const float* d_node_params,
     const gbts_graph_building_params* d_graph_building_params,
-    unsigned int* d_counters, int2* d_edge_nodes, half4* d_edge_params,
+    unsigned int* d_counters, int2* d_edge_nodes, edge_params* d_edge_params,
     int* d_num_outgoing_edges, const unsigned int nMaxEdges,
     const unsigned int nPhiBins) {
 
@@ -221,16 +224,15 @@ __global__ static void graphEdgeMakingKernel(
             }
             unsigned int nEdges = atomicAdd(&d_counters[0], 1);
             if (nEdges < nMaxEdges) {
-                __half exp_eta = __float2half(sqrtf(1 + tau * tau) - tau);
+                float exp_eta = sqrtf(1 + tau * tau) - tau;
                 // edge linking order is inside->out
                 atomicAdd(&d_num_outgoing_edges[begin_bin1 + n1Idx], 1);
 
                 d_edge_nodes[nEdges] =
                     make_int2(globalIdx2, begin_bin1 + n1Idx);
-
-                d_edge_params[nEdges] = make_half4(
-                    exp_eta, __float2half(curv), __float2half(phi2 + curv * r2),
-                    __float2half(phi1 + curv * r1));
+				
+                d_edge_params[nEdges] = make_edge_params(
+                    log2f(exp_eta), curv, phi2 + curv * r2, phi1 + curv * r1, (dr > 100.0f) & (ftau < 4.0f) );
             }
         }
     }
@@ -257,26 +259,18 @@ __global__ static void graphEdgeLinkingKernel(const int2* d_edge_nodes,
 
 __global__ static void graphEdgeMatchingKernel(
     const gbts_graph_building_params* d_graph_building_params,
-    const half4* d_edge_params, const int2* d_edge_nodes,
+    const edge_params* d_edge_params, const int2* d_edge_nodes,
     const int* d_num_outgoing_edges, const int* d_edge_links,
     unsigned char* d_num_neighbours, int* d_neighbours, int* d_reIndexer,
     unsigned int* d_counters, const unsigned int nEdges,
     const unsigned int nMaxNei) {
-    __shared__ __half cut_dphi_max;
-    __shared__ __half cut_dcurv_max;
-    __shared__ __half cut_tau_ratio_max;
-    __shared__ __half PI_h;
-    __shared__ __half PI_2_h;
-    __shared__ __half ONE_h;
+    __shared__ float cut_dphi_max;
+    __shared__ float cut_dcurv_max;
+    __shared__ float cut_tau_ratio_max;
     if (threadIdx.x == 0) {
-        cut_dphi_max = __float2half(d_graph_building_params->cut_dphi_max);
-        cut_dcurv_max = __float2half(d_graph_building_params->cut_dcurv_max);
-        cut_tau_ratio_max =
-            __float2half(d_graph_building_params->cut_tau_ratio_max);
-
-        PI_h = __float2half(CUDART_PI_F);
-        PI_2_h = __float2half(2 * CUDART_PI_F);
-        ONE_h = __float2half(1.0f);
+        cut_dphi_max = d_graph_building_params->cut_dphi_max;
+        cut_dcurv_max = d_graph_building_params->cut_dcurv_max;
+        cut_tau_ratio_max = d_graph_building_params->cut_tau_ratio_max;
     }
     __syncthreads();
 
@@ -294,11 +288,8 @@ __global__ static void graphEdgeMatchingKernel(
     if (nLinks == 0) {
         return;
     }
-    half4 params1 = d_edge_params[edge1_idx];  // [exp_eta, curv, Phi1, Phi2]
-
-    __half uat_2 = ONE_h / params1.x;
-    __half Phi2 = params1.z;
-    __half curv2 = params1.y;
+	
+	edge_params params1 = d_edge_params[edge1_idx];  // [log2(exp_eta), curv, Phi1, Phi2]
 
     int nei_pos = nMaxNei * edge1_idx;
 
@@ -311,28 +302,34 @@ __global__ static void graphEdgeMatchingKernel(
         }
         int edge2_idx = d_edge_links[link_begin + k];
 
-        half4 params2 = d_edge_params[edge2_idx];
+        edge_params params2 = d_edge_params[edge2_idx];
+		
+		// phi2 stores if to expand cuts
+		short expand_cuts = (params1.phi2 & 0x0001) + (params2.phi2 & 0x0001);
+		// convert from eta cut to a log2(e^eta) cut
+		float eta_cut = (expand_cuts*0.006f + cut_tau_ratio_max)*1.44269f;
+		float deta = static_cast<float>(params1.eta - params2.eta);
+		deta *= 6.2f/SHRT_MAX;
+        if (abs(deta) > eta_cut) {  // bad match
+            continue;
+        }
+		
+        float dPhi = static_cast<float>(params1.phi1 - params2.phi2);  // Phi2
+		dPhi *= 3.2f/SHRT_MAX;
 
-        __half tau_ratio = params2.x * uat_2 - ONE_h;
-
-        if (__habs(tau_ratio) > cut_tau_ratio_max) {  // bad match
+        if (dPhi < -M_PI) {
+            dPhi += M_2_PI;
+        } else if (dPhi > M_PI) {
+            dPhi -= M_2_PI;
+        }
+        if (abs(dPhi) > cut_dphi_max) {
             continue;
         }
 
-        __half dPhi = Phi2 - params2.w;  // Phi2
+        float dcurv = static_cast<float>(params1.curv - params2.curv);
+		dcurv *= 1e-4f*4.0f/SHRT_MAX;
 
-        if (dPhi < -PI_h) {
-            dPhi += PI_2_h;
-        } else if (dPhi > PI_h) {
-            dPhi -= PI_2_h;
-        }
-        if (__habs(dPhi) > cut_dphi_max) {
-            continue;
-        }
-
-        __half dcurv = curv2 - params2.y;
-
-        if (__habs(dcurv) > cut_dcurv_max) {
+        if (abs(dcurv) > cut_dcurv_max) {
             continue;
         }
 
