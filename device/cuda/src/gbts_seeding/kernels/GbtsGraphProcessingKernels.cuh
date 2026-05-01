@@ -847,7 +847,7 @@ void __global__ gbts_seed_conversion_kernel(
                               3.0f * tight_bid_cot_threshold) &
                              diff_code == 0;
         }
-		float quality = static_cast<float>(prop.x);
+        float quality = static_cast<float>(prop.x);
         // use one seed from a consistant pair/set + the inconsistant one
         // sample spacepoints from tracklet to create seeds
         // include 1st order unless either 2 or 3 are consitant with the other

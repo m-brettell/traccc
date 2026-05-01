@@ -128,7 +128,7 @@ using seed_collection =
     vecmem::edm::container<seed, vecmem::edm::type::vector<unsigned int>,
                            vecmem::edm::type::vector<unsigned int>,
                            vecmem::edm::type::vector<unsigned int>,
-						   vecmem::edm::type::vector<float> >;
+                           vecmem::edm::type::vector<float> >;
 
 }  // namespace traccc::edm
 

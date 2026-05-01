@@ -181,7 +181,8 @@ inline void select_seeds(
 
             n_seeds_per_spM++;
 
-            seeds_device.push_back({aTriplet.spB, aTriplet.spM, aTriplet.spT, aTriplet.weight});
+            seeds_device.push_back(
+                {aTriplet.spB, aTriplet.spM, aTriplet.spT, aTriplet.weight});
         }
     }
 }
