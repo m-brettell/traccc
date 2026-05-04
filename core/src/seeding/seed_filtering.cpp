@@ -118,7 +118,7 @@ void seed_filtering::operator()(
         seeds.push_back({sp_grid.bin(triplet.sp1.bin_idx)[triplet.sp1.sp_idx],
                          sp_grid.bin(triplet.sp2.bin_idx)[triplet.sp2.sp_idx],
                          sp_grid.bin(triplet.sp3.bin_idx)[triplet.sp3.sp_idx],
-                         triplet.weight});
+                         static_cast<float>(triplet.weight)});
     }
 }
 
