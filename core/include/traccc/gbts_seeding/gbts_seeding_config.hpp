@@ -95,6 +95,7 @@ struct gbts_graph_building_params {
     float cut_dphi_max = 0.012f;
     float cut_dcurv_max = 0.001f;
     float cut_tau_ratio_max = 0.01f;
+		float sum_cut_ratio_max = 1.3f;
 };
 
 struct gbts_seed_extraction_params {

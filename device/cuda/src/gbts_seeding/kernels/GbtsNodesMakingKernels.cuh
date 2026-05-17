@@ -292,8 +292,9 @@ __global__ void node_sorting_kernel(
     for (int idx = threadIdx.x + begin_node; idx < begin_node + nNodesPerBlock;
          idx += blockDim.x) {
 
-        if (idx >= nNodes)
+        if (idx >= nNodes) {
             continue;
+				}
 
         float4 sp = d_sp_params[idx];
 

@@ -219,6 +219,7 @@ __global__ static void graphEdgeMakingKernel(
             if (d0_for_max_curv > d0_max) {
                 continue;
             }
+					
             unsigned int nEdges = atomicAdd(&d_counters[0], 1);
             if (nEdges < nMaxEdges) {
                 __half exp_eta = __float2half(sqrtf(1 + tau * tau) - tau);
@@ -335,6 +336,10 @@ __global__ static void graphEdgeMatchingKernel(
         if (__habs(dcurv) > cut_dcurv_max) {
             continue;
         }
+
+				if(__habs(tau_ratio)/cut_tau_ratio_max + __habs(dPhi)/cut_dphi_max + __habs(dcurv)/cut_dcurv_max > __float2half(d_graph_building_params->sum_cut_ratio_max)) {
+					continue;
+				}
 
         d_neighbours[nei_pos + num_nei] = edge2_idx;
         d_reIndexer[edge2_idx] = 1;
